@@ -1,6 +1,189 @@
-# NIFTY 50 ML Trading Engine & Real-Time FYERS Market Data Service
+# 📈 NIFTY 50 ML Trading Engine — Real-Time Co-Pilot
 
-A production-grade Machine Learning service and Real-Time Market Data Engine for predicting next 30-minute return percentages (Model B Regressor) and direction (Model C Classifier) across NIFTY 50 constituents with institutional Risk Management and FYERS API v3 automatic authentication.
+A **production-grade Machine Learning service** and **Real-Time Co-Pilot** for intraday NIFTY 50 trading. Built on FYERS API v3, FastAPI, and custom XGBoost models, it predicts 30-minute return % and direction — and then **keeps watching your trade live**, pushing WebSocket alerts for trailing stop-losses and trend reversals.
+
+---
+
+## 🚀 Key Features
+
+### 🤖 Real-Time Co-Pilot
+- **Continuous Trade Monitoring**: After entering a trade, a background Python thread polls the ML pipeline every 60 seconds for all active trades.
+- **Trailing Stop-Loss**: As price rises, the Co-Pilot automatically moves up the stop-loss to lock in profits.
+- **Trend Reversal Alerts**: If RSI/MACD momentum breaks down, a live 🔴 Red Alert is pushed instantly via WebSocket: *"ALERT: Trend reversed to Bearish. SELL immediately."*
+- **End-of-Day Auto-Close**: At 3:15 PM IST, all intraday open positions are automatically marked `CLOSED_EOD` with a 🟡 Yellow Alert.
+- **Live SQLite Portfolio Ledger**: Active trades persisted in `data/trades.db`. Unlike Parquet files (historical ML data), SQLite acts as the real-time portfolio ledger.
+- **Native WebSocket Alerts**: No Telegram bots — pure Python WebSocket (`ws://<backend>/ws/alerts`) pushing JSON payloads directly to frontend.
+
+### 🔐 FYERS Authentication Engine
+- **Automatic Token Renewal**: Refreshes expired access tokens silently using `grant_type="refresh_token"` — no manual login on daily restarts.
+- **Server-Side Token Store**: Tokens saved in `data/live/fyers_tokens.json` (excluded from git).
+- **Auth State Machine**: Reports `FYERS_AUTHENTICATED`, `FYERS_TOKEN_EXPIRED`, `FYERS_REAUTH_REQUIRED`, `FYERS_AUTH_ERROR` — never leaks secrets.
+- **Login Frequency**: Manual OAuth login required only **once every ~14 days**. Daily restarts auto-reconnect silently.
+
+### 📊 Institutional Risk Management
+- **Dynamic ATR Stop-Loss & Target**: Volatility-adjusted (1.5 × ATR₁₄), Risk/Reward Guard ≥ 1:1.4 (else overrides to `"WAIT"`).
+- **Dynamic Position Sizing**: 🟢 100% Full / 🟡 50% Reduced / 🔴 0% Do Not Trade.
+- **Key Levels & Pullback Guard**: 20-candle Support/Resistance — prevents buying near peak resistance.
+- **Volume Strength & Confluence**: Volume confirmation (> 1.1×), RSI Overbought (> 75) / Oversold (< 25) alerts.
+
+### 🧠 ML Models
+- **Model B (Regressor)**: MAE `1.51%`, RMSE `2.03%`, Directional Accuracy **`54.56%`**
+- **Model C (Classifier)**: Accuracy `53.96%`, Recall **`70.27%`**, F1 `0.6115`, ROC-AUC `0.5545`
+- **~46 Scale-Invariant Features**: RSI, MACD, EMA, Bollinger Bands, ATR, ADX, lag periods, rolling windows — zero price-scale leakage.
+- **15-minute candles, 2-bar horizon** → 30-minute trend prediction.
+- **Automated Self-Retraining**: Scheduled at 6:00 PM weekdays. Promotes new models only if walk-forward CV metrics beat the champion.
+
+---
+
+## 📁 Project Structure
+
+```
+├── api/
+│   └── app.py                  # FastAPI app — REST endpoints + WebSocket + Co-Pilot background thread
+├── config/
+│   ├── settings.py             # Central config reader (YAML + .env)
+│   └── settings.yaml           # Model/data/feature parameters
+├── data/
+│   ├── loader.py               # Data loading utilities
+│   ├── trades.db               # SQLite — live active trade portfolio ledger
+│   ├── live/                   # Per-ticker live Parquet buffers (FYERS streaming)
+│   └── raw/
+│       └── NIFTY50_Preprocessed.csv  # Historical training dataset
+├── features/
+│   ├── build_features.py       # Feature engineering pipeline (~46 indicators)
+│   └── technical_indicators.py # RSI, MACD, EMA, ATR, ADX, Bollinger Bands
+├── inference/
+│   ├── predictor.py            # ML inference — loads champion models, runs prediction
+│   ├── live_pipeline.py        # Live data → features → prediction pipeline
+│   ├── fyers_client.py         # FYERS API v3 market data client
+│   ├── monitoring.py           # Co-Pilot monitoring engine
+│   └── ticker_utils.py         # NIFTY 50 ticker symbol utilities
+├── models/
+│   └── registry/               # Versioned champion model store (joblib + metadata JSON)
+│       ├── direction_classifier/
+│       └── return_regressor/
+├── retraining/
+│   ├── retrain_job.py          # Retrain pipeline + champion promotion gate
+│   ├── drift_monitor.py        # Model drift detection
+│   └── scheduler.py            # APScheduler — triggers retrain at 6 PM weekdays
+├── scripts/                    # Utility and documentation scripts
+├── services/
+│   ├── fyers_auth.py           # FYERS token manager + auto-refresh state machine
+│   ├── fyers_market_data.py    # Real-time NIFTY 50 market data service
+│   └── trade_tracker.py        # SQLite trade CRUD operations
+├── tests/                      # Unit & integration test suite (pytest)
+├── training/
+│   ├── data_prep.py            # Training data preparation
+│   ├── build_targets.py        # Target variable construction
+│   ├── train_classifier.py     # Model C (XGBoost Classifier) training
+│   ├── train_regressor.py      # Model B (XGBoost Regressor) training
+│   └── validation.py           # Walk-forward cross-validation
+├── utils/
+│   └── model_io.py             # Model save/load with versioning
+├── copilot_presentation.md     # Co-Pilot feature — management & technical overview
+├── requirements.txt
+├── Dockerfile
+└── .env                        # (NOT in git) FYERS_APP_ID, FYERS_SECRET_KEY
+```
+
+---
+
+## ⚙️ Setup & Installation
+
+### 1. Clone the Repository
+```bash
+git clone https://github.com/kalyani-coder/Trading-
+cd Trading-
+```
+
+### 2. Create Virtual Environment & Install Dependencies
+```bash
+python -m venv venv
+
+# Windows
+venv\Scripts\activate
+
+# macOS/Linux
+source venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+### 3. Configure Environment Variables
+Create a `.env` file in the project root:
+```bash
+FYERS_APP_ID=YOUR_APP_ID-100
+FYERS_SECRET_KEY=YOUR_SECRET_KEY
+```
+> ⚠️ **Never commit `.env` to GitHub.** It contains your secret keys.
+
+### 4. Run the FastAPI Server
+```bash
+python -m uvicorn api.app:app --host 127.0.0.1 --port 8000 --reload
+```
+
+### 5. One-Time FYERS Login (First Time Only)
+```
+http://127.0.0.1:8000/fyers/login
+```
+Complete the OAuth flow once. Tokens are saved server-side automatically. **You will NOT need to login again tomorrow** — the server auto-refreshes daily. Manual login only needed every ~14 days.
+
+---
+
+## 🌐 API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/` | Live dashboard |
+| `GET` | `/health` | System health & connection status |
+| `GET` | `/fyers/login` | One-click FYERS OAuth login |
+| `GET` | `/api/market/nifty50` | Real-time NIFTY 50 market summary |
+| `GET` | `/predict/{ticker}` | Single ticker prediction + risk analytics |
+| `GET` | `/predict?tickers=WIPRO,TCS` | Batch predictions |
+| `POST` | `/api/trades` | Register active trade for Co-Pilot monitoring |
+| `GET` | `/api/trades` | List all active trades |
+| `WS` | `/ws/alerts` | WebSocket — live Co-Pilot alerts stream |
+| `POST` | `/retrain` | Trigger manual model retraining |
+
+---
+
+## 🧪 Run Tests
+```bash
+python -m pytest tests/test_features.py tests/test_pipeline.py tests/test_ticker_utils.py tests/test_fyers_auth.py -v
+```
+
+---
+
+## 🔄 Authentication Flow
+
+```
+FIRST TIME:
+  /fyers/login → FYERS OAuth → saves access_token + refresh_token server-side
+
+EVERY SUBSEQUENT STARTUP (automatic):
+  Load tokens → access_token valid? → ✅ Connected
+                           ↓ expired?
+               Use refresh_token → auto-renew → ✅ Connected
+                           ↓ refresh also expired? (~14 days)
+               Manual login → /fyers/login
+```
+
+---
+
+## 🐳 Docker
+```bash
+docker build -t trading-ml .
+docker run -p 8000:8000 --env-file .env trading-ml
+```
+
+---
+
+## 📝 Important Notes
+- `.env` and `data/live/fyers_tokens.json` are excluded from git (security).
+- `venv/` is excluded — run `pip install -r requirements.txt` after cloning.
+- Models are versioned in `models/registry/` with champion promotion gate.
+- The Co-Pilot runs as a background daemon thread inside FastAPI — no separate process needed.
+- See `copilot_presentation.md` for a detailed Co-Pilot feature walkthrough with a real trading example.
 
 ---
 
