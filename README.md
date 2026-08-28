@@ -1,8 +1,45 @@
-# 📈 NIFTY 50 ML Trading Engine — Real-Time Co-Pilot
+# 📈 NIFTY 50 ML Trading Guidance Platform — Backend
 
-A **production-grade Machine Learning service** and **Real-Time Co-Pilot** for intraday NIFTY 50 trading. Built on FYERS API v3, FastAPI, and custom XGBoost models, it predicts 30-minute return % and direction — and then **keeps watching your trade live**, pushing WebSocket alerts for trailing stop-losses and trend reversals.
+> **For Frontend Developers**: This is the complete backend API. Your frontend just calls the REST endpoints and connects to the WebSocket. End users of the platform **do not need a Fyers account** — the backend handles all market data internally.
 
 ---
+
+## 📌 What This Project Is
+
+This is the **backend (Python/FastAPI) for a retail trading guidance platform**. The platform helps everyday investors make better intraday trading decisions on NIFTY 50 stocks using Machine Learning.
+
+**How it works end-to-end:**
+
+```
+[FYERS Stock Exchange API]
+         ↓  (live market data, operator's connection)
+[This Backend — Python/FastAPI]
+  • Fetches real-time NIFTY 50 prices via FYERS API
+  • Runs ML models → predicts next 30-min return & direction
+  • Applies institutional risk management rules
+  • Monitors active trades every 60 seconds (Co-Pilot)
+  • Pushes live alerts via WebSocket
+         ↓  (REST API + WebSocket)
+[Frontend — to be built by frontend developer]
+  • Shows predictions, stop-loss, targets to user
+  • Displays live Co-Pilot alerts in real-time
+         ↓  (website/app)
+[End User — retail trader seeking guidance]
+  • Gets AI-powered trade guidance on what to buy/sell
+  • Receives live alerts if market moves against their trade
+  • Does NOT need a Fyers account — the platform handles everything
+```
+
+**Who needs a Fyers account?**
+| Role | Fyers Account Needed? | Why |
+|---|---|---|
+| **Operator** (person running the server) | ✅ Yes | To connect to Fyers API and fetch live market data |
+| **Frontend Developer** | ❌ No | Just builds UI, calls this backend's REST/WebSocket APIs |
+| **End User / Customer** | ❌ No | They use the platform for guidance — backend fetches data on their behalf |
+
+---
+
+
 
 ## 🚀 Key Features
 
