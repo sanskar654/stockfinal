@@ -109,13 +109,31 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Configure Environment Variables
-Create a `.env` file in the project root:
+### 3. Get Your Own FYERS API Credentials
+
+> ⚠️ **Important:** Every user must create their own Fyers API app. You **cannot** use someone else's `FYERS_APP_ID` or `FYERS_SECRET_KEY` — they are tied to your personal Fyers trading account.
+
+Follow these steps to get your credentials:
+
+1. **Log in to Fyers API Dashboard**: Go to [https://myapi.fyers.in/](https://myapi.fyers.in/) and log in with your Fyers trading account.
+
+2. **Create a New App**:
+   - Click **"Create App"**
+   - App Name: anything (e.g., `MyTradingBot`)
+   - App Type: **Trading Platform**
+   - Redirect URL: `http://127.0.0.1:8000/fyers/callback` ← **must match exactly**
+   - Click **Save**
+
+3. **Copy your credentials**:
+   - **App ID** → looks like `XXXXXXXXXX-100`
+   - **Secret Key** → a 10-character string
+
+4. **Create a `.env` file** in the project root directory:
 ```bash
-FYERS_APP_ID=YOUR_APP_ID-100
-FYERS_SECRET_KEY=YOUR_SECRET_KEY
+FYERS_APP_ID=XXXXXXXXXX-100
+FYERS_SECRET_KEY=XXXXXXXXXX
 ```
-> ⚠️ **Never commit `.env` to GitHub.** It contains your secret keys.
+> ⚠️ **Never commit `.env` to GitHub.** It contains your personal secret keys and must stay private.
 
 ### 4. Run the FastAPI Server
 ```bash
@@ -123,10 +141,15 @@ python -m uvicorn api.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 ### 5. One-Time FYERS Login (First Time Only)
+Open your browser and go to:
 ```
 http://127.0.0.1:8000/fyers/login
 ```
-Complete the OAuth flow once. Tokens are saved server-side automatically. **You will NOT need to login again tomorrow** — the server auto-refreshes daily. Manual login only needed every ~14 days.
+- This opens the official FYERS OAuth login page.
+- Log in with your **Fyers trading account** (the same account linked to your API app).
+- After login, you are redirected back automatically — tokens are saved server-side.
+- ✅ **You do NOT need to do this again tomorrow.** The server auto-refreshes your access token daily.
+- ⚠️ Manual login is only needed once every **~14 days** when the refresh token expires.
 
 ---
 
