@@ -143,10 +143,32 @@ class FyersLiveClient:
             logger.info("FyersLiveClient operating in offline fallback mode (No valid access token).")
 
     def clear_expired_token(self):
-        """Clears expired access token from environment and .env file."""
-        logger.warning("Fyers access token expired. Clearing token...")
-        _save_env_key("FYERS_ACCESS_TOKEN", "")
-        os.environ.pop("FYERS_ACCESS_TOKEN", None)
+        """Attempts automatic refresh of expired access token via refresh-token flow.
+        Only clears tokens from disk if the refresh token itself is explicitly rejected by the server.
+        Falls back to offline mock mode if auto-refresh cannot proceed.
+        """
+        logger.warning("Fyers access token expired. Attempting automatic refresh via refresh-token flow...")
+        refreshed = False
+        try:
+            refreshed = self.token_manager.refresh_access_token()
+        except Exception as exc:
+            logger.error("Automatic refresh raised exception: %s", exc)
+            refreshed = False
+
+        if refreshed:
+            self.reload_and_init()
+            if self.is_authenticated:
+                logger.info("Access token auto-refreshed successfully. No manual login needed.")
+                return
+            logger.warning("Auto-refresh returned success but FyersModel still not initialized. Falling back.")
+        else:
+            logger.warning(
+                "Auto-refresh did not restore access (status=%s, last_error=%s). "
+                "Falling back to offline mock mode without clearing stored refresh token.",
+                self.token_manager.status,
+                self.token_manager.last_error,
+            )
+
         self.is_authenticated = False
         self.fyers_model = None
 
@@ -164,32 +186,16 @@ class FyersLiveClient:
         return self.get_login_url()
 
     def set_auth_code(self, auth_code: str) -> bool:
-        """Exchanges auth_code for access_token and saves to .env."""
+        """Exchanges OAuth auth_code for access_token + refresh_token via FyersTokenManager.
+        Ensures tokens are saved to both the server-side JSON store and .env fallback,
+        with a proper expires_at timestamp so auto-refresh works on subsequent startups.
+        """
         try:
-            from fyers_apiv3 import fyersModel
-            session = fyersModel.SessionModel(
-                client_id=FYERS.app_id,
-                secret_key=FYERS.secret_key,
-                redirect_uri=FYERS.redirect_url,
-                response_type="code",
-                grant_type="authorization_code"
-            )
-            session.set_token(auth_code)
-            res = session.generate_token()
-            if isinstance(res, dict) and res.get("s") == "ok":
-                token = res.get("access_token")
-                refresh_token = res.get("refresh_token")
-                _save_env_key("FYERS_ACCESS_TOKEN", token)
-                if refresh_token:
-                    _save_env_key("FYERS_REFRESH_TOKEN", refresh_token)
-                os.environ["FYERS_ACCESS_TOKEN"] = token
-                self.reload_and_init()
-                return True
-            else:
-                logger.error("Token generation failed: %s", res)
-                return False
+            self.token_manager.exchange_code_for_tokens(auth_code)
+            self.reload_and_init()
+            return bool(self.token_manager.access_token and self.is_authenticated)
         except Exception as e:
-            logger.error("Auth code exchange error: %s", e)
+            logger.error("Auth code exchange via TokenManager failed: %s", e)
             return False
 
     def fetch_live_quote(self, symbol: str) -> dict:

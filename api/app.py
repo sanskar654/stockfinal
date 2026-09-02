@@ -24,7 +24,7 @@ from services.fyers_auth import get_token_manager, FYERS_AUTHENTICATED, FYERS_TO
 from services.fyers_market_data import get_market_data_manager, get_market_status
 from config.settings import FYERS
 from services.trade_tracker import get_trade_tracker
-from inference.monitoring import run_continuous_monitoring, register_ws_connection, unregister_ws_connection
+from inference.monitoring import run_continuous_monitoring, run_fast_price_check, register_ws_connection, unregister_ws_connection, evaluate_single_trade
 import asyncio
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -67,6 +67,8 @@ class PredictionResponse(BaseModel):
 
 class TokenInput(BaseModel):
     access_token: str
+    refresh_token: Optional[str] = None
+    expires_in: Optional[int] = 86400
 
 
 class TradeInput(BaseModel):
@@ -92,26 +94,31 @@ def _automated_daily_retrain_daemon():
             logger.error("[CRON] Error during scheduled retraining: %s", e)
 
 
-def _continuous_monitoring_daemon():
-    """Background thread that runs the continuous monitoring loop every 1 minute."""
+async def _continuous_monitoring_loop():
+    """Background loop that runs the full ML-based monitoring every 60 seconds."""
     logger.info("[CRON] Continuous Market Monitoring Scheduler started in background.")
-    # We need to run the async function in a new event loop since this is a thread
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    async def loop_runner():
-        while True:
-            try:
-                await run_continuous_monitoring()
-            except Exception as e:
-                logger.error("[CRON] Error during continuous monitoring: %s", e)
-            await asyncio.sleep(60)
-            
-    loop.run_until_complete(loop_runner())
+    while True:
+        try:
+            await run_continuous_monitoring()
+        except Exception as e:
+            logger.error("[CRON] Error during continuous monitoring: %s", e)
+        await asyncio.sleep(60)
+
+
+async def _fast_price_check_loop():
+    """Ultra-fast background loop using WebSocket tick prices to check SL/Target every 5 seconds.
+    Provides near-instant alerts without waiting for the 60s ML cycle."""
+    logger.info("[CRON] Fast WebSocket price-check loop started (5s interval).")
+    while True:
+        try:
+            await run_fast_price_check()
+        except Exception as e:
+            logger.error("[CRON] Error during fast price check: %s", e)
+        await asyncio.sleep(5)
 
 
 @app.on_event("startup")
-def startup_event():
+async def startup_event():
     """Automated backend startup task: initializes FYERS authentication, market data manager, and background retraining daemon."""
     logger.info("Initializing NIFTY 50 ML Engine Backend Server...")
     try:
@@ -123,15 +130,24 @@ def startup_event():
         market_mgr.fetch_quote_with_retry("NSE:NIFTY50-INDEX")
         logger.info("[INFO] FYERS Market Data Engine initialized successfully.")
 
+        # Start the FyersDataSocket live tick stream (exact real-time prices)
+        market_mgr.start_data_websocket()
+        # Pre-subscribe NIFTY50 index to show live ticks on dashboard immediately
+        market_mgr.subscribe_symbols(["NSE:NIFTY50-INDEX"])
+        logger.info("[INFO] FyersDataSocket live tick stream started.")
+
         # Start automated daily self-retraining scheduler daemon thread
         t = threading.Thread(target=_automated_daily_retrain_daemon, daemon=True)
         t.start()
         logger.info("[INFO] Background automated retraining daemon initialized.")
         
-        # Start continuous monitoring daemon thread
-        t2 = threading.Thread(target=_continuous_monitoring_daemon, daemon=True)
-        t2.start()
-        logger.info("[INFO] Background continuous monitoring daemon initialized.")
+        # Start continuous monitoring task on the main event loop
+        asyncio.create_task(_continuous_monitoring_loop())
+        logger.info("[INFO] Background continuous monitoring task initialized.")
+
+        # Start fast 5-second WebSocket price-check loop for instant SL/Target alerts
+        asyncio.create_task(_fast_price_check_loop())
+        logger.info("[INFO] Fast 5-second WebSocket price-check loop initialized.")
     except Exception as e:
         logger.warning("FYERS Backend Client startup warning: %s", e)
 
@@ -187,6 +203,16 @@ def health_check():
     }
 
 
+@app.get("/api/fyers-status")
+def fyers_status():
+    """Lightweight endpoint returning only the real-time Fyers connection status.
+    Used by the frontend to dynamically update the banner without a full page reload."""
+    token_mgr = get_token_manager()
+    # Force reload env in case tokens were refreshed on disk
+    token_mgr.load_tokens()
+    return token_mgr.get_auth_status()
+
+
 @app.get("/fyers/login")
 def fyers_login():
     """Optional OAuth 2.0 Login redirect URL generator."""
@@ -227,21 +253,40 @@ def fyers_callback(auth_code: str = Query(None), auth_code_param: str = Query(No
 
 @app.post("/fyers/token")
 def set_fyers_token(data: TokenInput):
-    """Directly saves FYERS_ACCESS_TOKEN server-side without browser redirect."""
+    """Directly saves FYERS_ACCESS_TOKEN (and optionally refresh_token) server-side without browser redirect.
+    If a refresh_token is also provided, automatic daily renewal is enabled for ~14 days.
+    """
     if not data.access_token.strip():
         raise HTTPException(status_code=400, detail="access_token cannot be empty.")
 
     token_mgr = get_token_manager()
-    token_mgr.save_tokens(data.access_token)
+    rt = (data.refresh_token or "").strip()
+    exp = int(data.expires_in or 86400)
+    token_mgr.save_tokens(data.access_token, refresh_token=rt, expires_in=exp)
     client = get_fyers_client()
     client.reload_and_init()
-    return {"message": "FYERS_ACCESS_TOKEN saved server-side successfully.", "is_authenticated": token_mgr.status == FYERS_AUTHENTICATED}
+    has_rt = bool(token_mgr.refresh_token)
+    msg = (
+        "FYERS tokens saved server-side successfully. "
+        + ("Auto-renewal ENABLED (refresh token stored)." if has_rt else "WARNING: No refresh token provided — manual re-login will be required when access token expires (~24h).")
+    )
+    return {"message": msg, "is_authenticated": token_mgr.status == FYERS_AUTHENTICATED, "has_refresh_token": has_rt}
 
 
 @app.get("/predict/{ticker}", response_model=PredictionResponse)
 def get_prediction(ticker: str, qty: int = Query(100, ge=1), limit_price: Optional[float] = Query(None, ge=0.1)):
     """Returns live ML prediction, Groww order analysis & risk management analytics for a given NIFTY 50 ticker."""
     try:
+        # Subscribe ticker to FyersDataSocket so live ticks are instantly available
+        from inference.ticker_utils import normalize_and_validate_ticker
+        try:
+            clean_ticker = normalize_and_validate_ticker(ticker)
+            fyers_symbol = f"NSE:{clean_ticker}-EQ"
+            market_mgr = get_market_data_manager()
+            market_mgr.subscribe_symbols([fyers_symbol])
+        except Exception:
+            pass  # Don't block prediction if subscription fails
+        
         prediction = run_live_prediction(ticker, custom_qty=qty, custom_limit_price=limit_price)
         return prediction
     except ValueError as ve:
@@ -273,8 +318,8 @@ def trigger_retrain(background_tasks: BackgroundTasks):
 
 
 @app.post("/api/trades")
-def track_trade(data: TradeInput):
-    """Starts monitoring a new trade."""
+async def track_trade(data: TradeInput, background_tasks: BackgroundTasks):
+    """Starts monitoring a new trade and immediately runs first evaluation."""
     tracker = get_trade_tracker()
     trade_id = tracker.add_trade(
         ticker=data.ticker,
@@ -284,6 +329,18 @@ def track_trade(data: TradeInput):
         stop_loss=data.stop_loss,
         target_price=data.target_price
     )
+    
+    # Trigger an immediate async evaluation so the user gets their first alert right away
+    trade_dict = {
+        "id": trade_id,
+        "ticker": data.ticker,
+        "direction": data.direction,
+        "current_stop_loss": data.stop_loss,
+        "target_price": data.target_price
+    }
+    import asyncio
+    asyncio.create_task(evaluate_single_trade(trade_dict))
+    
     return {"message": "Trade tracking started.", "trade_id": trade_id}
 
 
@@ -334,12 +391,18 @@ def minimal_dashboard():
         fyers_banner = f"""
         <div style="background: rgba(234, 179, 8, 0.12); border: 1px solid #eab308; color: #fde047; padding: 16px; border-radius: 8px; margin-bottom: 20px;">
             <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
-                <span>🔑 <strong>FYERS App ID Configured ({FYERS.app_id[:6]}...)</strong> — One-Time Initial Authentication Required:</span>
-                <a href="/fyers/login" target="_blank" style="background: #eab308; color: black; padding: 6px 14px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 13px;">⚡ 1-Click Initial Login</a>
+                <span>🔑 <strong>FYERS App ID Configured ({FYERS.app_id[:6]}...)</strong> — One-Time Initial Authentication Required (valid ~14 days):</span>
+                <a href="/fyers/login" target="_blank" style="background: #eab308; color: black; padding: 6px 14px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 13px;">⚡ 1-Click OAuth Login (Recommended)</a>
             </div>
-            <div style="display: flex; gap: 10px;">
-                <input type="text" id="directTokenInput" placeholder="Or paste FYERS_ACCESS_TOKEN directly here..." style="flex-grow: 1; padding: 8px 12px; background: #0f172a; border: 1px solid #eab308; color: white; border-radius: 6px;">
-                <button onclick="saveTokenDirectly()" style="background: #eab308; color: black; padding: 8px 16px; border-radius: 6px; border: none; font-weight: bold; cursor: pointer;">Save Direct Token</button>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                <input type="text" id="directTokenInput" placeholder="Paste FYERS_ACCESS_TOKEN here (required)..." style="padding: 8px 12px; background: #0f172a; border: 1px solid #eab308; color: white; border-radius: 6px;">
+                <input type="text" id="directRefreshTokenInput" placeholder="Paste FYERS_REFRESH_TOKEN here (enables auto-renewal for 14 days)..." style="padding: 8px 12px; background: #0f172a; border: 1px solid #eab308; color: white; border-radius: 6px;">
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                <div style="font-size: 12px; color: #94a3b8;">
+                    💡 OAuth login automatically stores both tokens. Paste refresh-token above to enable daily silent auto-renewal without manual login.
+                </div>
+                <button onclick="saveTokenDirectly()" style="background: #eab308; color: black; padding: 8px 16px; border-radius: 6px; border: none; font-weight: bold; cursor: pointer; white-space: nowrap;">Save Tokens & Connect</button>
             </div>
         </div>
         """
@@ -546,7 +609,7 @@ def minimal_dashboard():
             <!-- Live Co-Pilot Alerts Card -->
             <div class="card" id="alertsCard" style="border-color:var(--yellow);">
                 <div class="card-section-title" style="color:var(--yellow);">🔔 LIVE CO-PILOT ALERTS</div>
-                <div id="alertsContainer" style="max-height: 200px; overflow-y: auto; display:flex; flex-direction:column; gap:8px;">
+                <div id="alertsContainer" style="max-height: 400px; overflow-y: auto; display:flex; flex-direction:column; gap:8px;">
                     <div style="padding:10px; background:#0f172a; border-radius:6px; color:var(--text-muted); font-size:13px; text-align:center;">
                         Listening for live background updates...
                     </div>
@@ -563,8 +626,38 @@ def minimal_dashboard():
         <script>
             // Store last predicted data to use for monitoring
             let lastPredictionData = null;
-            
-            // Setup WebSocket for Live Alerts
+
+            // ─── Dynamic Fyers Banner Updater ───────────────────────────────────
+            function updateFyersBanner() {
+                fetch('/api/fyers-status')
+                    .then(r => r.json())
+                    .then(data => {
+                        const banner = document.getElementById('fyersBanner');
+                        if (!banner) return;
+                        if (data.is_authenticated) {
+                            banner.style.background = 'rgba(34,197,94,0.12)';
+                            banner.style.borderColor = '#22c55e';
+                            banner.style.color = '#4ade80';
+                            banner.innerHTML = `<span>🟢 <strong>Fyers API Live Connected</strong> &mdash; Serving real-time predictions to all users.</span><span style="font-size:11px;background:#22c55e;color:black;padding:2px 10px;border-radius:12px;font-weight:bold;">LIVE ACTIVE</span>`;
+                        } else if (data.status === 'FYERS_TOKEN_EXPIRED') {
+                            banner.style.background = 'rgba(234,179,8,0.12)';
+                            banner.style.borderColor = '#eab308';
+                            banner.style.color = '#fde047';
+                            banner.innerHTML = `<span>🟡 <strong>FYERS Access Token Expired — Auto-Refreshing...</strong></span><span style="font-size:11px;background:#eab308;color:black;padding:2px 10px;border-radius:12px;font-weight:bold;">REFRESHING</span>`;
+                        } else {
+                            banner.style.background = 'rgba(234,179,8,0.12)';
+                            banner.style.borderColor = '#eab308';
+                            banner.style.color = '#fde047';
+                            banner.innerHTML = `<span>🔑 <strong>Fyers: Re-authentication Required</strong> &mdash; <a href="/fyers/login" style="color:#eab308;font-weight:bold;">Click to Login</a></span><span style="font-size:11px;background:#ef4444;color:white;padding:2px 10px;border-radius:12px;font-weight:bold;">DISCONNECTED</span>`;
+                        }
+                    })
+                    .catch(() => {});
+            }
+            // Poll status every 10 seconds so banner updates without page refresh
+            updateFyersBanner();
+            setInterval(updateFyersBanner, 10000);
+
+            // ─── WebSocket for Live Co-Pilot Alerts ─────────────────────────────
             function setupWebSocket() {
                 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                 const wsUrl = protocol + '//' + window.location.host + '/ws/alerts';
@@ -572,6 +665,12 @@ def minimal_dashboard():
                 
                 ws.onmessage = function(event) {
                     const data = JSON.parse(event.data);
+                    
+                    // Filter: Only show alerts for the currently selected ticker in the dashboard
+                    if (!lastPredictionData || data.ticker !== lastPredictionData.ticker) {
+                        return;
+                    }
+
                     const alertsContainer = document.getElementById('alertsContainer');
                     
                     // Remove placeholder if it's the first alert
@@ -622,15 +721,19 @@ def minimal_dashboard():
 
             async function saveTokenDirectly() {
                 const token = document.getElementById('directTokenInput').value.trim();
-                if (!token) { alert('Please paste FYERS_ACCESS_TOKEN first.'); return; }
+                const refreshToken = document.getElementById('directRefreshTokenInput').value.trim();
+                if (!token) { alert('Please paste FYERS_ACCESS_TOKEN first (required).'); return; }
                 try {
+                    const payload = { access_token: token };
+                    if (refreshToken) payload.refresh_token = refreshToken;
                     const res = await fetch('/fyers/token', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ access_token: token })
+                        body: JSON.stringify(payload)
                     });
                     const data = await res.json();
-                    alert(data.message || 'Token updated.');
+                    const msg = (data.message || 'Token updated.') + (data.has_refresh_token === false ? '\\n⚠️ Note: No refresh token stored — you will need to re-login tomorrow.' : '');
+                    alert(msg);
                     window.location.reload();
                 } catch(e) {
                     alert('Error saving token: ' + e);
@@ -738,6 +841,10 @@ def minimal_dashboard():
                 btn.style.background = "#eab308";
                 btn.style.color = "black";
                 
+                // Clear previous alerts when analyzing a new stock
+                const alertsContainer = document.getElementById('alertsContainer');
+                alertsContainer.innerHTML = '<div style="padding:10px; background:#0f172a; border-radius:6px; color:var(--text-muted); font-size:13px; text-align:center;">Initializing Co-Pilot for new stock...</div>';
+                
                 // 1. Get Prediction
                 await getPrediction();
                 
@@ -746,6 +853,7 @@ def minimal_dashboard():
                     btn.innerText = "🔄 Co-Pilot Active! Tracking in background...";
                     btn.style.background = "var(--green)";
                     btn.style.color = "white";
+                    alertsContainer.innerHTML = '<div style="padding:10px; background:#0f172a; border-radius:6px; color:var(--text-muted); font-size:13px; text-align:center;">⏳ Co-Pilot activated. Waiting for first analysis...</div>';
                     await startMonitoringTrade(true);
                 } else {
                     btn.innerText = "🚀 Analyze Order & Activate Live Co-Pilot";
@@ -785,8 +893,9 @@ def minimal_dashboard():
                 }
             }
 
-            // Auto-run prediction for default WIPRO on page load
-            analyzeAndTrack();
+            // On page load: only fetch prediction preview, do NOT auto-start tracking.
+            // User must click the button to explicitly start Co-Pilot monitoring.
+            getPrediction();
         </script>
     </body>
     </html>

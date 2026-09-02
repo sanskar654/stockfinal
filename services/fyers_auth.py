@@ -166,7 +166,11 @@ class FyersTokenManager:
         return True
 
     def refresh_access_token(self) -> bool:
-        """Attempts automatic access token renewal using stored refresh token via official FYERS API."""
+        """Attempts automatic access token renewal using the official Fyers v3 refresh-token endpoint.
+        Uses a direct POST to https://api-t1.fyers.in/api/v3/validate-refresh-token with
+        appIdHash (SHA-256 of client_id:secret_key) and the stored refresh token + PIN.
+        SessionModel is NOT used here — it only supports authorization_code grant, not refresh_token.
+        """
         if not FYERS.app_id or not FYERS.secret_key:
             self.status = FYERS_REAUTH_REQUIRED
             self.last_error = "Missing FYERS_APP_ID or FYERS_SECRET_KEY in environment."
@@ -174,48 +178,117 @@ class FyersTokenManager:
             return False
 
         if not self.refresh_token:
-            self.status = FYERS_REAUTH_REQUIRED
-            self.last_error = "No refresh token available server-side."
-            logger.info("[INFO] Refresh token not present server-side. Re-authentication required.")
-            return False
-
-        try:
-            logger.info("[INFO] Access token expired. Refreshing FYERS access token automatically...")
-            from fyers_apiv3 import fyersModel
-            import hashlib
-
-            app_id_hash = hashlib.sha256(f"{FYERS.app_id}:{FYERS.secret_key}".encode()).hexdigest()
-            session = fyersModel.SessionModel(
-                client_id=FYERS.app_id,
-                secret_key=FYERS.secret_key,
-                redirect_uri=FYERS.redirect_url,
-                response_type="code",
-                grant_type="refresh_token"
-            )
-            session.set_token(self.refresh_token)
-            response = session.generate_token()
-
-            if isinstance(response, dict) and response.get("s") == "ok" and response.get("access_token"):
-                new_access_token = response["access_token"]
-                new_refresh_token = response.get("refresh_token", self.refresh_token)
-                expires_in = response.get("expires_in", 86400)
-                self.save_tokens(new_access_token, new_refresh_token, expires_in=expires_in)
-                logger.info("[INFO] FYERS access token refreshed successfully!")
-                return True
-            else:
-                error_msg = response.get("message", str(response)) if isinstance(response, dict) else str(response)
-                logger.info("[INFO] FYERS refresh token expired or invalid (%s). Cleared tokens for clean offline fallback mode.", error_msg)
-                self.access_token = ""
-                self.refresh_token = ""
+            self.load_tokens()
+            if not self.refresh_token:
                 self.status = FYERS_REAUTH_REQUIRED
-                self.last_error = f"Re-authentication required: {error_msg}"
-                _save_env_updates({"FYERS_ACCESS_TOKEN": "", "FYERS_REFRESH_TOKEN": ""})
+                self.last_error = "No refresh token available server-side."
+                logger.info("[INFO] Refresh token not present server-side. Re-authentication required.")
                 return False
-        except Exception as e:
-            logger.error("[ERROR] Token refresh failed: %s", e)
-            self.status = FYERS_AUTH_ERROR
-            self.last_error = str(e)
+
+        if not FYERS.pin:
+            self.status = FYERS_REAUTH_REQUIRED
+            self.last_error = "FYERS_PIN not configured in .env. Required for refresh-token flow."
+            logger.warning("[WARNING] FYERS_PIN is not set — cannot auto-refresh access token. "
+                           "Add FYERS_PIN=<your_4_digit_pin> to the .env file.")
             return False
+
+        import hashlib
+        import requests as _requests
+
+        app_id_hash = hashlib.sha256(f"{FYERS.app_id}:{FYERS.secret_key}".encode()).hexdigest()
+        url = "https://api-t1.fyers.in/api/v3/validate-refresh-token"
+        payload = {
+            "grant_type": "refresh_token",
+            "appIdHash": app_id_hash,
+            "refresh_token": self.refresh_token,
+            "pin": FYERS.pin,
+        }
+        headers = {"Content-Type": "application/json"}
+
+        retry_count = 3
+        last_response = None
+        last_exception = None
+
+        for attempt in range(1, retry_count + 1):
+            try:
+                logger.info("[INFO] Refreshing FYERS access token via v3 endpoint (attempt %d/%d)...", attempt, retry_count)
+                resp = _requests.post(url, json=payload, headers=headers, timeout=15)
+                response = resp.json()
+                last_response = response
+
+                if isinstance(response, dict) and response.get("s") == "ok" and response.get("access_token"):
+                    new_access_token = response["access_token"]
+                    new_refresh_token = response.get("refresh_token", self.refresh_token)
+                    expires_in = response.get("expires_in", 86400)
+                    self.save_tokens(new_access_token, new_refresh_token, expires_in=expires_in)
+                    logger.info("[INFO] FYERS access token refreshed successfully on attempt %d!", attempt)
+                    return True
+
+                error_msg = response.get("message", str(response)) if isinstance(response, dict) else str(response)
+                error_code = response.get("code") if isinstance(response, dict) else None
+                error_lower = error_msg.lower()
+
+                explicit_invalid = (
+                    error_code in [-14, 401, -501]
+                    or "invalid refresh" in error_lower
+                    or "refresh token expired" in error_lower
+                    or "refresh token is invalid" in error_lower
+                    or "token not found" in error_lower
+                    or ("unauthorized" in error_lower and "refresh" in error_lower)
+                )
+
+                if explicit_invalid:
+                    logger.error(
+                        "[AUTH] FYERS refresh token explicitly rejected by server (code=%s, msg='%s'). "
+                        "Clearing stored tokens — manual re-login required.",
+                        error_code, error_msg
+                    )
+                    self._clear_all_tokens()
+                    self.status = FYERS_REAUTH_REQUIRED
+                    self.last_error = f"Re-authentication required: {error_msg}"
+                    return False
+
+                logger.warning(
+                    "[AUTH] Refresh attempt %d returned non-ok (code=%s, msg='%s'). Retrying...",
+                    attempt, error_code, error_msg
+                )
+
+            except Exception as e:
+                last_exception = e
+                logger.warning("[AUTH] Refresh attempt %d raised exception: %s. Retrying...", attempt, e)
+
+            if attempt < retry_count:
+                import time as _time
+                _time.sleep(2 ** attempt)
+
+        logger.error("[AUTH] All %d refresh attempts failed. Last response: %s. Last exception: %s",
+                     retry_count, last_response, last_exception)
+
+        self.status = FYERS_TOKEN_EXPIRED
+        self.last_error = (
+            f"Automatic token refresh failed after {retry_count} attempts. "
+            f"Last error: {last_exception or last_response}"
+        )
+        return False
+
+
+    def _clear_all_tokens(self):
+        """Wipes tokens from in-memory state, server-side JSON store, and .env fallback."""
+        self.access_token = ""
+        self.refresh_token = ""
+        self.expires_at = 0.0
+
+        if self.token_store_path.exists():
+            try:
+                with open(self.token_store_path, "w") as f:
+                    import json as _json
+                    _json.dump({"access_token": "", "refresh_token": "", "expires_at": 0, "cleared_at": __import__("time").time()}, f, indent=2)
+                logger.info("[AUTH] Server-side token store cleared.")
+            except Exception as e:
+                logger.warning("[AUTH] Could not clear token store file: %s", e)
+
+        _update_env_file({"FYERS_ACCESS_TOKEN": "", "FYERS_REFRESH_TOKEN": ""})
+        FYERS.reload()
 
     def exchange_code_for_tokens(self, auth_code: str) -> str:
         """Exchanges initial auth_code for access_token and refresh_token, saving them server-side."""

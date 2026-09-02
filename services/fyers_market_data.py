@@ -2,15 +2,16 @@
 FYERS Real-Time Market Data Service & Market Hours Engine.
 Handles Indian Stock Market timezone logic (Asia/Kolkata), exponential backoff reconnection,
 runtime token expiration recovery, and real-time NIFTY 50 data streaming for backend endpoints.
+Now integrates FyersDataSocket for millisecond-accurate live tick prices for all NIFTY 50 stocks.
 """
 from __future__ import annotations
 
 import logging
-import math
+import threading
 import time
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from services.fyers_auth import get_token_manager, FYERS_AUTHENTICATED
 from config.settings import FYERS
@@ -47,7 +48,8 @@ def get_market_status(now_dt: datetime | None = None) -> str:
 
 
 class FyersMarketDataManager:
-    """Server-side market data connection manager with exponential backoff and runtime token recovery."""
+    """Server-side market data connection manager with exponential backoff, runtime token recovery,
+    and a FyersDataSocket live tick stream for millisecond-accurate prices across all NIFTY 50 stocks."""
 
     def __init__(self):
         self.token_manager = get_token_manager()
@@ -55,6 +57,18 @@ class FyersMarketDataManager:
         self.retry_count = 0
         self.max_backoff_seconds = 30
         self.last_quote_cache: Dict[str, Any] = {}
+
+        # --- Live Tick WebSocket state ---
+        # Maps "NSE:COALINDIA-EQ" -> latest LTP float from the WebSocket stream
+        self._live_prices: Dict[str, float] = {}
+        self._live_prices_lock = threading.Lock()
+        self._ws_client = None
+        self._ws_running = False
+        self._subscribed_symbols: set = set()
+
+    # ──────────────────────────────────────────────────────────────────
+    # REST Model (fallback / initialization)
+    # ──────────────────────────────────────────────────────────────────
 
     def _init_fyers_model(self) -> bool:
         """Initializes or refreshes the underlying FYERS SDK model instance."""
@@ -81,10 +95,156 @@ class FyersMarketDataManager:
             self.fyers_model = None
             return False
 
+    # ──────────────────────────────────────────────────────────────────
+    # Live Tick WebSocket (primary price source)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _on_ws_message(self, message: dict):
+        """Called by FyersDataSocket for every incoming tick. Updates in-memory live price cache."""
+        try:
+            if isinstance(message, list):
+                # Batch tick messages
+                for tick in message:
+                    self._process_tick(tick)
+            elif isinstance(message, dict):
+                self._process_tick(message)
+        except Exception as e:
+            logger.debug("[WS] Error processing tick message: %s", e)
+
+    def _process_tick(self, tick: dict):
+        """Extracts LTP from a single tick and stores it keyed by symbol."""
+        symbol = tick.get("symbol")
+        ltp = tick.get("ltp")
+        if symbol and ltp is not None:
+            with self._live_prices_lock:
+                self._live_prices[symbol] = float(ltp)
+
+    def _on_ws_error(self, message):
+        logger.warning("[WS] FyersDataSocket error: %s", message)
+
+    def _on_ws_close(self, message):
+        logger.warning("[WS] FyersDataSocket closed: %s. Will attempt reconnect.", message)
+        self._ws_running = False
+        # Attempt reconnect after 10 seconds
+        time.sleep(10)
+        if self.token_manager.is_access_token_valid():
+            self._connect_websocket()
+
+    def _on_ws_open(self, message):
+        logger.info("[WS] FyersDataSocket connected. Subscribing to %d symbols.", len(self._subscribed_symbols))
+        # Re-subscribe if this is a reconnect
+        if self._subscribed_symbols and self._ws_client:
+            try:
+                self._ws_client.subscribe(
+                    symbols=list(self._subscribed_symbols),
+                    data_type="SymbolUpdate"
+                )
+            except Exception as e:
+                logger.error("[WS] Failed to re-subscribe on open: %s", e)
+
+    def _connect_websocket(self):
+        """Creates and connects the FyersDataSocket client in a background daemon thread."""
+        try:
+            from fyers_apiv3.FyersWebsocket import data_ws
+            access_token = self.token_manager.access_token
+            if not access_token:
+                logger.warning("[WS] No access token available. Cannot start DataSocket.")
+                return
+
+            # FyersDataSocket expects token in "appid:accesstoken" format
+            full_token = f"{FYERS.app_id}:{access_token}"
+
+            self._ws_client = data_ws.FyersDataSocket(
+                access_token=full_token,
+                log_path=str(FYERS.token_store_path.parent),
+                litemode=False,
+                write_to_file=False,
+                reconnect=True,
+                on_connect=self._on_ws_open,
+                on_close=self._on_ws_close,
+                on_error=self._on_ws_error,
+                on_message=self._on_ws_message,
+            )
+            self._ws_running = True
+            # connect() is blocking — run in a daemon thread
+            t = threading.Thread(target=self._ws_client.connect, daemon=True)
+            t.start()
+            logger.info("[WS] FyersDataSocket daemon thread started.")
+        except Exception as e:
+            logger.error("[WS] Failed to initialize FyersDataSocket: %s", e)
+            self._ws_running = False
+
+    def start_data_websocket(self):
+        """Public entry point: starts the live data WebSocket stream.
+        Called once at server startup. Safe to call multiple times."""
+        if self._ws_running:
+            return
+        if not self.token_manager.is_access_token_valid():
+            logger.warning("[WS] Skipping DataSocket start — access token is not valid.")
+            return
+        logger.info("[WS] Starting FyersDataSocket live tick stream...")
+        self._connect_websocket()
+
+    def subscribe_symbols(self, symbols: list):
+        """Subscribes to live ticks for a list of Fyers symbols (e.g. 'NSE:COALINDIA-EQ').
+        Call this after a user clicks Analyze to ensure that stock's price is streamed."""
+        to_add = [s for s in symbols if s not in self._subscribed_symbols]
+        if not to_add:
+            return
+
+        for s in to_add:
+            self._subscribed_symbols.add(s)
+
+        if self._ws_client and self._ws_running:
+            try:
+                self._ws_client.subscribe(symbols=to_add, data_type="SymbolUpdate")
+                logger.info("[WS] Subscribed to live ticks for: %s", to_add)
+            except Exception as e:
+                logger.warning("[WS] Failed to subscribe symbols %s: %s", to_add, e)
+        else:
+            logger.info("[WS] Socket not yet running; symbols queued for subscription on connect: %s", to_add)
+
+    def get_live_price(self, symbol: str) -> Optional[float]:
+        """Returns the latest WebSocket tick price for a symbol, or None if not yet received."""
+        with self._live_prices_lock:
+            return self._live_prices.get(symbol)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Unified Quote Fetcher (WebSocket-first, REST fallback)
+    # ──────────────────────────────────────────────────────────────────
+
     def fetch_quote_with_retry(self, symbol: str = "NSE:NIFTY50-INDEX") -> Dict[str, Any]:
-        """Fetches live market quote for symbol using exponential backoff on disconnects and automatic token refresh on expiry."""
+        """Fetches live market quote for symbol.
+        Priority: 1) FyersDataSocket live tick (instant, exact), 2) REST API fallback."""
         clean_symbol = symbol if ":" in symbol else f"NSE:{symbol}-EQ"
 
+        # ── Priority 1: WebSocket live price (millisecond accurate) ──
+        ws_price = self.get_live_price(clean_symbol)
+        if ws_price is not None:
+            cached = self.last_quote_cache.get(clean_symbol, {})
+            prev_close = cached.get("prev_close", ws_price)
+            chg = round(ws_price - prev_close, 2)
+            chg_pct = round((chg / prev_close * 100.0) if prev_close else 0.0, 2)
+            quote_data = {
+                "symbol": clean_symbol,
+                "price": round(ws_price, 2),
+                "change": chg,
+                "change_percent": chg_pct,
+                "open": cached.get("open", ws_price),
+                "high": cached.get("high", ws_price),
+                "low": cached.get("low", ws_price),
+                "volume": cached.get("volume", 0),
+                "timestamp": datetime.now(MARKET_TZ).isoformat(),
+                "market_status": get_market_status(),
+                "auth_status": self.token_manager.status,
+                "is_live_fyers": True,
+                "source": "websocket"
+            }
+            # Update cache with latest tick price
+            self.last_quote_cache[clean_symbol] = {**self.last_quote_cache.get(clean_symbol, {}), **quote_data}
+            return quote_data
+
+        # ── Priority 2: REST API (legacy fallback) ──
         if not self.fyers_model:
             if not self._init_fyers_model():
                 return self._fallback_quote(clean_symbol)
@@ -119,10 +279,12 @@ class FyersMarketDataManager:
                     "high": float(v.get("high_price", lp)),
                     "low": float(v.get("low_price", lp)),
                     "volume": int(v.get("volume", 0)),
+                    "prev_close": prev_close,
                     "timestamp": datetime.now(MARKET_TZ).isoformat(),
                     "market_status": get_market_status(),
                     "auth_status": self.token_manager.status,
-                    "is_live_fyers": True
+                    "is_live_fyers": True,
+                    "source": "rest"
                 }
                 self.last_quote_cache[clean_symbol] = quote_data
                 self.retry_count = 0
@@ -156,7 +318,8 @@ class FyersMarketDataManager:
             "timestamp": datetime.now(MARKET_TZ).isoformat(),
             "market_status": get_market_status(),
             "auth_status": self.token_manager.status,
-            "is_live_fyers": False
+            "is_live_fyers": False,
+            "source": "fallback"
         }
 
     def get_nifty50_summary(self) -> Dict[str, Any]:
@@ -170,7 +333,8 @@ class FyersMarketDataManager:
             "timestamp": quote["timestamp"],
             "market_status": quote["market_status"],
             "auth_status": quote["auth_status"],
-            "is_live": quote.get("is_live_fyers", False)
+            "is_live": quote.get("is_live_fyers", False),
+            "source": quote.get("source", "unknown")
         }
 
 
