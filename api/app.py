@@ -94,6 +94,84 @@ def _automated_daily_retrain_daemon():
             logger.error("[CRON] Error during scheduled retraining: %s", e)
 
 
+def _daily_fyers_reauth_daemon():
+    """Background thread that automatically renews the FYERS access token daily.
+
+    Checks every 30 minutes. If the access token is expired (or will expire within
+    30 minutes) AND the time is between 08:40–09:10 IST (pre-market window),
+    it triggers a fresh headless TOTP auto-login so the token is always valid
+    when the market opens at 09:15 IST.
+
+    Also triggers an immediate refresh on startup if the token is already expired.
+    This means: after a one-time manual login (or TOTP setup), the system reconnects
+    automatically every single day without any human intervention.
+    """
+    from zoneinfo import ZoneInfo
+    IST = ZoneInfo("Asia/Kolkata")
+
+    logger.info("[CRON] Daily FYERS Auto-ReAuth Daemon started in background.")
+
+    # Attempt immediate fix on startup if token is already expired
+    _try_fyers_reauth(reason="startup")
+
+    while True:
+        try:
+            time.sleep(1800)  # check every 30 minutes
+            now_ist = datetime.now(IST)
+
+            token_mgr = get_token_manager()
+            token_mgr.load_tokens()
+
+            if token_mgr.is_access_token_valid():
+                logger.debug("[CRON] FYERS token still valid, skipping re-auth.")
+                continue
+
+            # Token expired: if we're in the pre-market window (08:40-09:10 IST) or market hours,
+            # trigger immediate headless re-login
+            hour, minute = now_ist.hour, now_ist.minute
+            is_premarket = (hour == 8 and minute >= 40) or (hour == 9 and minute <= 10)
+            is_market_hours = (hour == 9 and minute >= 15) or (9 < hour < 15) or (hour == 15 and minute <= 30)
+
+            if is_premarket or is_market_hours:
+                logger.info(
+                    "[CRON] FYERS token expired during active hours (%02d:%02d IST). Triggering auto-login...",
+                    hour, minute,
+                )
+                _try_fyers_reauth(reason=f"scheduled-{hour:02d}{minute:02d}IST")
+            else:
+                # Outside market hours — still attempt if 08:40 is approaching
+                # (within 2 hours before market open)
+                minutes_to_840 = ((8 * 60 + 40) - (hour * 60 + minute)) % (24 * 60)
+                if minutes_to_840 <= 30:
+                    logger.info("[CRON] Approaching pre-market window. Triggering FYERS auto-login...")
+                    _try_fyers_reauth(reason="pre-market-prep")
+
+        except Exception as e:
+            logger.error("[CRON] Error in daily FYERS re-auth daemon: %s", e)
+
+
+def _try_fyers_reauth(reason: str = "manual") -> bool:
+    """Attempts headless TOTP auto-login via FyersTokenManager. Returns True on success."""
+    try:
+        token_mgr = get_token_manager()
+        logger.info("[REAUTH] Triggering FYERS token renewal (reason=%s)...", reason)
+        success = token_mgr.refresh_access_token()
+        if success:
+            # Re-initialize the FyersLiveClient so it picks up the new token
+            client = get_fyers_client()
+            client.reload_and_init()
+            logger.info("[REAUTH] FYERS token renewed successfully (reason=%s).", reason)
+        else:
+            logger.warning(
+                "[REAUTH] FYERS token renewal failed (reason=%s, status=%s, error=%s).",
+                reason, token_mgr.status, token_mgr.last_error,
+            )
+        return success
+    except Exception as exc:
+        logger.error("[REAUTH] Exception during token renewal (reason=%s): %s", reason, exc)
+        return False
+
+
 async def _continuous_monitoring_loop():
     """Background loop that runs the full ML-based monitoring every 60 seconds."""
     logger.info("[CRON] Continuous Market Monitoring Scheduler started in background.")
@@ -140,6 +218,11 @@ async def startup_event():
         t = threading.Thread(target=_automated_daily_retrain_daemon, daemon=True)
         t.start()
         logger.info("[INFO] Background automated retraining daemon initialized.")
+
+        # Start FYERS daily auto-reconnect daemon (headless TOTP login at 08:50 IST)
+        reauth_thread = threading.Thread(target=_daily_fyers_reauth_daemon, daemon=True)
+        reauth_thread.start()
+        logger.info("[INFO] FYERS Daily Auto-ReAuth Daemon started (fires at 08:50 IST daily).")
         
         # Start continuous monitoring task on the main event loop
         asyncio.create_task(_continuous_monitoring_loop())
@@ -204,13 +287,58 @@ def health_check():
 
 
 @app.get("/api/fyers-status")
+@app.get("/api/fyers/status")
 def fyers_status():
-    """Lightweight endpoint returning only the real-time Fyers connection status.
+    """Lightweight endpoint returning real-time Fyers connection status.
+    Auto-triggers headless TOTP login if token is expired and TOTP is configured.
     Used by the frontend to dynamically update the banner without a full page reload."""
     token_mgr = get_token_manager()
     # Force reload env in case tokens were refreshed on disk
     token_mgr.load_tokens()
+    # If expired and TOTP login is available, try it transparently
+    if not token_mgr.is_access_token_valid():
+        from services.fyers_headless_login import is_headless_login_configured
+        if is_headless_login_configured():
+            logger.info("[API] Token expired on status check — triggering background auto-login...")
+            import threading
+            t = threading.Thread(target=_try_fyers_reauth, kwargs={"reason": "status-check"}, daemon=True)
+            t.start()
     return token_mgr.get_auth_status()
+
+
+@app.post("/api/fyers/force-refresh")
+def fyers_force_refresh():
+    """Manually triggers FYERS headless TOTP auto-login from the dashboard.
+    Works without any browser interaction if FYERS_CLIENT_ID and FYERS_TOTP_KEY are set.
+    """
+    token_mgr = get_token_manager()
+    if token_mgr.is_access_token_valid():
+        return {
+            "success": True,
+            "message": "FYERS token is already valid and active.",
+            "status": token_mgr.get_auth_status()
+        }
+
+    success = _try_fyers_reauth(reason="force-refresh-api")
+    client = get_fyers_client()
+    client.reload_and_init()
+
+    if success:
+        return {
+            "success": True,
+            "message": "FYERS auto-login succeeded! Token is now active.",
+            "status": token_mgr.get_auth_status()
+        }
+    else:
+        from services.fyers_headless_login import is_headless_login_configured
+        if not is_headless_login_configured():
+            detail = (
+                "FYERS_TOTP_KEY or FYERS_CLIENT_ID not set in .env. "
+                "Add them to enable fully automatic daily login, or use the OAuth login button below."
+            )
+        else:
+            detail = f"Auto-login failed: {token_mgr.last_error}"
+        raise HTTPException(status_code=503, detail=detail)
 
 
 @app.get("/fyers/login")
@@ -372,37 +500,39 @@ def minimal_dashboard():
 
     token_mgr = get_token_manager()
     auth_status = token_mgr.status
+    headless_ok = token_mgr.get_auth_status().get("headless_login_configured", False)
+    app_id_short = FYERS.app_id[:6] + "..." if FYERS.app_id else "NOT SET"
 
     if auth_status == FYERS_AUTHENTICATED:
         fyers_banner = """
-        <div style="background: rgba(34, 197, 94, 0.12); border: 1px solid #22c55e; color: #4ade80; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
-            <span>🟢 <strong>Fyers API Live Connected (Central Backend)</strong> — Serving real-time predictions to all users across all devices.</span>
+        <div id="fyersBanner" style="background: rgba(34, 197, 94, 0.12); border: 1px solid #22c55e; color: #4ade80; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
+            <span>🟢 <strong>Fyers API Live Connected</strong> &mdash; Real-time data active. Auto-renews daily at 08:50 IST via TOTP.</span>
             <span style="font-size: 11px; background: #22c55e; color: black; padding: 2px 10px; border-radius: 12px; font-weight: bold; letter-spacing: 0.5px;">LIVE ACTIVE</span>
         </div>
         """
-    elif auth_status == FYERS_TOKEN_EXPIRED:
-        fyers_banner = """
-        <div style="background: rgba(234, 179, 8, 0.12); border: 1px solid #eab308; color: #fde047; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
-            <span>🟡 <strong>FYERS Access Token Expired — Auto-Refreshing Token in Background...</strong></span>
-            <span style="font-size: 11px; background: #eab308; color: black; padding: 2px 10px; border-radius: 12px; font-weight: bold; letter-spacing: 0.5px;">REFRESHING</span>
+    elif headless_ok:
+        fyers_banner = f"""
+        <div id="fyersBanner" style="background: rgba(234, 179, 8, 0.12); border: 1px solid #eab308; color: #fde047; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
+            <span>🟡 <strong>FYERS Token Expired</strong> &mdash; TOTP auto-login configured. Click to reconnect instantly.</span>
+            <button onclick="forceReconnect(this)" id="forceReconnectBtn" style="font-size: 12px; background: #eab308; color: black; padding: 4px 14px; border-radius: 10px; font-weight: bold; border: none; cursor: pointer; white-space: nowrap;">⚡ Auto-Reconnect Now</button>
         </div>
         """
     else:
         fyers_banner = f"""
-        <div style="background: rgba(234, 179, 8, 0.12); border: 1px solid #eab308; color: #fde047; padding: 16px; border-radius: 8px; margin-bottom: 20px;">
+        <div id="fyersBanner" style="background: rgba(234, 179, 8, 0.12); border: 1px solid #eab308; color: #fde047; padding: 16px; border-radius: 8px; margin-bottom: 20px;">
             <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
-                <span>🔑 <strong>FYERS App ID Configured ({FYERS.app_id[:6]}...)</strong> — One-Time Initial Authentication Required (valid ~14 days):</span>
-                <a href="/fyers/login" target="_blank" style="background: #eab308; color: black; padding: 6px 14px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 13px;">⚡ 1-Click OAuth Login (Recommended)</a>
+                <span>🔑 <strong>FYERS App ID ({app_id_short})</strong> &mdash; One-Time Login Required. <small style="color:#94a3b8;">(After adding FYERS_TOTP_KEY to .env, this never shows again)</small></span>
+                <a href="/fyers/login" target="_blank" style="background: #eab308; color: black; padding: 6px 14px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 13px;">⚡ OAuth Login</a>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
-                <input type="text" id="directTokenInput" placeholder="Paste FYERS_ACCESS_TOKEN here (required)..." style="padding: 8px 12px; background: #0f172a; border: 1px solid #eab308; color: white; border-radius: 6px;">
-                <input type="text" id="directRefreshTokenInput" placeholder="Paste FYERS_REFRESH_TOKEN here (enables auto-renewal for 14 days)..." style="padding: 8px 12px; background: #0f172a; border: 1px solid #eab308; color: white; border-radius: 6px;">
+                <input type="text" id="directTokenInput" placeholder="Paste FYERS_ACCESS_TOKEN here..." style="padding: 8px 12px; background: #0f172a; border: 1px solid #eab308; color: white; border-radius: 6px;">
+                <input type="text" id="directRefreshTokenInput" placeholder="Paste FYERS_REFRESH_TOKEN (optional)..." style="padding: 8px 12px; background: #0f172a; border: 1px solid #eab308; color: white; border-radius: 6px;">
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
                 <div style="font-size: 12px; color: #94a3b8;">
-                    💡 OAuth login automatically stores both tokens. Paste refresh-token above to enable daily silent auto-renewal without manual login.
+                    💡 <strong>Permanent fix:</strong> Add <code style="background:#1e293b;padding:2px 5px;border-radius:3px;">FYERS_CLIENT_ID=FAK08110</code> and <code style="background:#1e293b;padding:2px 5px;border-radius:3px;">FYERS_TOTP_KEY=&lt;your_base32_key&gt;</code> to .env — system will auto-login daily at 08:50 IST forever.
                 </div>
-                <button onclick="saveTokenDirectly()" style="background: #eab308; color: black; padding: 8px 16px; border-radius: 6px; border: none; font-weight: bold; cursor: pointer; white-space: nowrap;">Save Tokens & Connect</button>
+                <button onclick="saveTokenDirectly()" style="background: #eab308; color: black; padding: 8px 16px; border-radius: 6px; border: none; font-weight: bold; cursor: pointer; white-space: nowrap;">Save Token &amp; Connect</button>
             </div>
         </div>
         """
@@ -638,21 +768,56 @@ def minimal_dashboard():
                             banner.style.background = 'rgba(34,197,94,0.12)';
                             banner.style.borderColor = '#22c55e';
                             banner.style.color = '#4ade80';
-                            banner.innerHTML = `<span>🟢 <strong>Fyers API Live Connected</strong> &mdash; Serving real-time predictions to all users.</span><span style="font-size:11px;background:#22c55e;color:black;padding:2px 10px;border-radius:12px;font-weight:bold;">LIVE ACTIVE</span>`;
-                        } else if (data.status === 'FYERS_TOKEN_EXPIRED') {
+                            banner.style.display = 'flex';
+                            banner.style.justifyContent = 'space-between';
+                            banner.style.alignItems = 'center';
+                            banner.innerHTML = `<span>&#x1F7E2; <strong>Fyers API Live Connected</strong> &mdash; Real-time data active. Auto-renews daily at 08:50 IST.</span><span style="font-size:11px;background:#22c55e;color:black;padding:2px 10px;border-radius:12px;font-weight:bold;">LIVE ACTIVE</span>`;
+                        } else if (data.headless_login_configured) {
                             banner.style.background = 'rgba(234,179,8,0.12)';
                             banner.style.borderColor = '#eab308';
                             banner.style.color = '#fde047';
-                            banner.innerHTML = `<span>🟡 <strong>FYERS Access Token Expired — Auto-Refreshing...</strong></span><span style="font-size:11px;background:#eab308;color:black;padding:2px 10px;border-radius:12px;font-weight:bold;">REFRESHING</span>`;
+                            banner.style.display = 'flex';
+                            banner.style.justifyContent = 'space-between';
+                            banner.style.alignItems = 'center';
+                            banner.innerHTML = `<span>&#x1F7E1; <strong>FYERS Token Expired</strong> &mdash; TOTP auto-login configured. Click to reconnect instantly.</span><button onclick="forceReconnect(this)" id="forceReconnectBtn" style="font-size:12px;background:#eab308;color:black;padding:4px 14px;border-radius:10px;font-weight:bold;border:none;cursor:pointer;white-space:nowrap;">&#x26A1; Auto-Reconnect Now</button>`;
                         } else {
                             banner.style.background = 'rgba(234,179,8,0.12)';
                             banner.style.borderColor = '#eab308';
                             banner.style.color = '#fde047';
-                            banner.innerHTML = `<span>🔑 <strong>Fyers: Re-authentication Required</strong> &mdash; <a href="/fyers/login" style="color:#eab308;font-weight:bold;">Click to Login</a></span><span style="font-size:11px;background:#ef4444;color:white;padding:2px 10px;border-radius:12px;font-weight:bold;">DISCONNECTED</span>`;
+                            banner.style.display = 'flex';
+                            banner.style.justifyContent = 'space-between';
+                            banner.style.alignItems = 'center';
+                            banner.innerHTML = `<span>&#x1F511; <strong>Fyers: Login Required</strong> &mdash; <a href="/fyers/login" style="color:#eab308;font-weight:bold;">OAuth Login</a> | Add FYERS_TOTP_KEY to .env for permanent auto-login.</span><span style="font-size:11px;background:#ef4444;color:white;padding:2px 10px;border-radius:12px;font-weight:bold;">DISCONNECTED</span>`;
                         }
                     })
                     .catch(() => {});
             }
+
+            // ─── Force Reconnect via headless TOTP auto-login ────────────────────
+            function forceReconnect(btn) {
+                if (btn) { btn.disabled = true; btn.textContent = '\u23F3 Connecting...'; }
+                fetch('/api/fyers/force-refresh', { method: 'POST' })
+                    .then(async res => {
+                        const data = await res.json();
+                        if (res.ok && data.success) {
+                            const banner = document.getElementById('fyersBanner');
+                            if (banner) {
+                                banner.style.background = 'rgba(34,197,94,0.12)';
+                                banner.style.borderColor = '#22c55e';
+                                banner.style.color = '#4ade80';
+                                banner.innerHTML = `<span>&#x1F7E2; <strong>Fyers API Live Connected</strong> &mdash; Auto-login successful! Token active.</span><span style="font-size:11px;background:#22c55e;color:black;padding:2px 10px;border-radius:12px;font-weight:bold;">LIVE ACTIVE</span>`;
+                            }
+                        } else {
+                            if (btn) { btn.disabled = false; btn.textContent = '\u26A1 Retry'; }
+                            alert('Auto-reconnect error: ' + (data.detail || data.message || JSON.stringify(data)));
+                        }
+                    })
+                    .catch(() => {
+                        if (btn) { btn.disabled = false; btn.textContent = '\u26A1 Retry'; }
+                        alert('Network error. Check server logs.');
+                    });
+            }
+
             // Poll status every 10 seconds so banner updates without page refresh
             updateFyersBanner();
             setInterval(updateFyersBanner, 10000);
