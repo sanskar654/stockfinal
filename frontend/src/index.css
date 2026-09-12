@@ -1,0 +1,206 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap');
+@import 'tailwindcss';
+
+@theme inline {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'DM Mono', ui-monospace, monospace;
+
+  --color-background: #f8f9fa;
+  --color-foreground: #0f1117;
+  --color-card: #ffffff;
+  --color-card-foreground: #0f1117;
+  --color-primary: #0f1117;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f1f3f5;
+  --color-secondary-foreground: #495057;
+  --color-muted: #f1f3f5;
+  --color-muted-foreground: #868e96;
+  --color-accent: #1c7ed6;
+  --color-accent-foreground: #ffffff;
+  --color-border: #e9ecef;
+  --color-ring: #1c7ed6;
+  --color-up: #2f9e44;
+  --color-down: #e03131;
+  --radius: 4px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background:
+    radial-gradient(circle at top left, rgba(28, 126, 214, 0.10), transparent 30%),
+    radial-gradient(circle at top right, rgba(47, 158, 68, 0.08), transparent 28%),
+    linear-gradient(180deg, #f4f7fb 0%, #eef3f8 100%);
+  color: var(--color-foreground);
+  -webkit-font-smoothing: antialiased;
+}
+
+button, input, select {
+  font: inherit;
+}
+
+#root {
+  background: transparent;
+}
+
+main > div {
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.bg-white {
+  box-shadow: 0 1px 0 rgba(15, 17, 23, 0.02), 0 10px 24px rgba(15, 17, 23, 0.03);
+}
+
+.rounded-2xl,
+.rounded,
+.rounded-xl {
+  border-radius: 18px !important;
+}
+
+.market-ticker {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  overflow: hidden;
+  border-bottom: 1px solid #e9ecef;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(12px);
+  color: #868e96;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.market-ticker__lead,
+.market-ticker__session {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 14px;
+  background: #f8f9fa;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.market-ticker__session {
+  border-left: 1px solid #e9ecef;
+  color: #adb5bd;
+}
+
+.market-ticker__pulse {
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #2f9e44;
+  box-shadow: 0 0 0 4px rgba(47, 158, 68, 0.12);
+  animation: ticker-pulse 2s ease-in-out infinite;
+}
+
+.market-ticker__viewport {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  mask-image: linear-gradient(90deg, transparent, black 4%, black 96%, transparent);
+}
+
+.market-ticker__track {
+  display: flex;
+  width: max-content;
+  animation: ticker-slide 70s linear infinite;
+}
+
+.market-ticker__viewport:hover .market-ticker__track {
+  animation-play-state: paused;
+}
+
+.market-ticker__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 18px;
+  border-right: 1px solid #f1f3f5;
+  white-space: nowrap;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.market-ticker__item strong {
+  color: #343a40;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+
+.market-ticker__up { color: #2f9e44; }
+.market-ticker__down { color: #e03131; }
+
+@keyframes ticker-slide {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+@keyframes ticker-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+main > div {
+  animation: workspace-enter 420ms ease-out both;
+}
+
+main .bg-white {
+  animation: card-enter 420ms ease-out both;
+}
+
+main .bg-white:nth-child(2) { animation-delay: 45ms; }
+main .bg-white:nth-child(3) { animation-delay: 90ms; }
+main .bg-white:nth-child(4) { animation-delay: 135ms; }
+
+@keyframes workspace-enter {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes card-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .market-ticker__track,
+  .market-ticker__pulse,
+  main > div,
+  main .bg-white { animation: none; }
+}
+
+@media (max-width: 700px) {
+  .market-ticker__session { display: none; }
+  .market-ticker__lead { padding: 0 10px; }
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #dee2e6;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #adb5bd;
+}

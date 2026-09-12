@@ -1,0 +1,18 @@
+{
+  "name": "nifty50-ml-trading-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Merged NIFTY 50 ML Trading dashboard: React/Vite frontend + FastAPI ML backend, run together with `npm run dev`.",
+  "scripts": {
+    "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "dev:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-backend.ps1",
+    "build": "npm run build --prefix frontend",
+    "install:frontend": "npm install --prefix frontend",
+    "install:backend": "(if exist .venv\\Scripts\\python.exe (.venv\\Scripts\\python.exe -m pip install --upgrade pip && .venv\\Scripts\\python.exe -m pip install -r backend/requirements.txt) else if exist ..\\.venv\\Scripts\\python.exe (..\\.venv\\Scripts\\python.exe -m pip install --upgrade pip && ..\\.venv\\Scripts\\python.exe -m pip install -r backend/requirements.txt) else (python -m pip install --upgrade pip && python -m pip install -r backend/requirements.txt))",
+    "setup": "npm run install:frontend && npm run install:backend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

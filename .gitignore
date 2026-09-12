@@ -1,14 +1,32 @@
-# Environment and local credentials
-.env
-*.env
-env
-data/live/fyers_tokens.json
-
-# Virtual environment
-venv/
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/.venv/
+backend/venv/
 .venv/
+venv/
 
-# Python cache & build artifacts
+# Environment & Secrets (NEVER COMMIT)
+.env
+.env.*
+*.env
+**/.env
+**/.env.*
+!**/.env.example
+
+# Token stores & Live state
+data/live/fyers_tokens.json
+backend/data/live/fyers_tokens.json
+fyers_token*.txt
+
+# Build & Dist
+dist/
+frontend/dist/
+build/
+.cache/
+.vite/
+
+# Python Cache & Testing
 __pycache__/
 *.py[cod]
 *$py.class
@@ -16,6 +34,11 @@ __pycache__/
 .coverage
 htmlcov/
 
-# Logs & Temporary files
+# Logs
+logs/
 *.log
-scratch/
+npm-debug.log*
+
+# OS & IDE
+.DS_Store
+Thumbs.db
