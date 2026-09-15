@@ -16,6 +16,28 @@ function fmt(n: number) {
   }).format(n)
 }
 
+function fmtShort(n: number) {
+  if (Math.abs(n) >= 100000) return `₹${(n / 100000).toFixed(1)}L`
+  if (Math.abs(n) >= 1000) return `₹${(n / 1000).toFixed(1)}K`
+  return `₹${fmt(n)}`
+}
+
+/** Compute win rate only from trades that have a non-null PnL (closed positions) */
+function computeStats(trades: TradeHistoryItem[]) {
+  const closedTrades = trades.filter(t => t.pnl !== null && t.pnl !== undefined)
+  const winningTrades = closedTrades.filter(t => (t.pnl ?? 0) > 0)
+  const losingTrades = closedTrades.filter(t => (t.pnl ?? 0) < 0)
+  const totalPnl = closedTrades.reduce((sum, t) => sum + (Number(t.pnl) || 0), 0)
+  const winRate = closedTrades.length > 0 ? (winningTrades.length / closedTrades.length) * 100 : 0
+  const avgWin = winningTrades.length > 0
+    ? winningTrades.reduce((s, t) => s + (Number(t.pnl) || 0), 0) / winningTrades.length
+    : 0
+  const avgLoss = losingTrades.length > 0
+    ? losingTrades.reduce((s, t) => s + (Number(t.pnl) || 0), 0) / losingTrades.length
+    : 0
+  return { closedTrades, winningTrades, losingTrades, totalPnl, winRate, avgWin, avgLoss }
+}
+
 export default function Profile() {
   const { currentUser, logout } = useAuth()
 
@@ -106,15 +128,22 @@ export default function Profile() {
     ? new Date(profile.registered_at).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })
     : (isDemo ? 'Jan 2026' : 'Today')
 
-  // Demo user retains demo stats; real account has 0 trades until purchased
-  const totalTrades = profile?.stats?.total_trades ?? (isDemo ? 5 : 0)
-  const winRate = profile?.stats?.win_rate_pct ?? (isDemo ? 66.7 : 0)
-  const realizedPnl = profile?.stats?.total_realized_pnl ?? (isDemo ? 1337.0 : 0)
+  // Sort trades newest-first
   const trades: TradeHistoryItem[] = [...(profile?.recent_trades ?? [])].sort((a, b) => {
     const left = a.created_at || a.date || ''
     const right = b.created_at || b.date || ''
     return right.localeCompare(left)
   })
+
+  // Compute stats from actual trade records (not backend zeros)
+  const { closedTrades, winningTrades, losingTrades, totalPnl, winRate, avgWin, avgLoss } = computeStats(trades)
+  const openTrades = trades.filter(t => t.pnl === null || t.pnl === undefined)
+
+  // Demo user shows demo stats; real account uses computed stats from trades
+  const totalTrades = trades.length > 0 ? trades.length : (isDemo ? 5 : 0)
+  const displayWinRate = trades.length > 0 ? winRate : (isDemo ? 66.7 : 0)
+  const displayPnl = trades.length > 0 ? totalPnl : (isDemo ? 1337.0 : 0)
+
   const groupedTrades = trades.reduce<Record<string, TradeHistoryItem[]>>((acc, trade) => {
     const key = trade.date || new Date(trade.created_at || Date.now()).toISOString().slice(0, 10)
     acc[key] = acc[key] || []
@@ -122,7 +151,6 @@ export default function Profile() {
     return acc
   }, {})
   const orderedDates = Object.keys(groupedTrades).sort((a, b) => b.localeCompare(a))
-  const totalPnlForAllTrades = trades.reduce((sum, trade) => sum + (Number(trade.pnl) || 0), 0)
 
   return (
     <div className="p-4 md:p-6 space-y-6">
@@ -130,6 +158,7 @@ export default function Profile() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-lg font-bold text-[#0f1117]">User Profile</h1>
+          <p className="text-sm text-[#868e96] mt-0.5">Trading account overview &amp; history</p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -160,34 +189,80 @@ export default function Profile() {
       )}
 
       {/* User Info Card */}
-      <div className="bg-white border border-[#e9ecef] rounded p-6 flex flex-col md:flex-row md:items-center gap-6 shadow-xs">
-        <div className="w-16 h-16 bg-[#0f1117] rounded-full flex items-center justify-center shrink-0 shadow-sm">
-          <span className="text-white text-xl font-bold tracking-tight">{initials}</span>
-        </div>
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h2 className="text-lg font-semibold text-[#0f1117]">{displayName}</h2>
-            <span className="text-[10px] px-2 py-0.5 bg-[#ebfbee] text-[#2f9e44] font-medium rounded">
-              Verified Trader
-            </span>
+      <div className="bg-white border border-[#e9ecef] rounded-xl p-6 shadow-xs">
+        <div className="flex flex-col md:flex-row md:items-center gap-6">
+          <div className="w-16 h-16 bg-gradient-to-br from-[#1c7ed6] to-[#0f1117] rounded-full flex items-center justify-center shrink-0 shadow-sm">
+            <span className="text-white text-xl font-bold tracking-tight">{initials}</span>
           </div>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#868e96]">
-            <span>{displayEmail}</span>
-            <span>•</span>
-            <span>{displayUsername}</span>
-            <span>•</span>
-            <span>{displayPhone}</span>
-            <span>•</span>
-            <span>Member since {memberSince}</span>
+          <div className="space-y-1 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-lg font-semibold text-[#0f1117]">{displayName}</h2>
+              <span className="text-[10px] px-2 py-0.5 bg-[#ebfbee] text-[#2f9e44] font-medium rounded">
+                Verified Trader
+              </span>
+              {isDemo && (
+                <span className="text-[10px] px-2 py-0.5 bg-[#fff3bf] text-[#b7791f] font-medium rounded">
+                  Demo Mode
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#868e96]">
+              <span>{displayEmail}</span>
+              <span>•</span>
+              <span>{displayUsername}</span>
+              <span>•</span>
+              <span>{displayPhone}</span>
+              <span>•</span>
+              <span>Member since {memberSince}</span>
+            </div>
           </div>
-        </div>
 
-        <div className="md:ml-auto flex gap-6 text-center">
-          <div>
-            <p className="text-[10px] text-[#868e96] uppercase tracking-widest font-medium">Total Trades</p>
-            <p className="text-lg font-semibold text-[#0f1117] mt-1">{totalTrades}</p>
+          <div className="flex gap-6 text-center shrink-0">
+            <div>
+              <p className="text-[10px] text-[#868e96] uppercase tracking-widest font-medium">Total Trades</p>
+              <p className="text-lg font-bold text-[#0f1117] mt-1">{totalTrades}</p>
+            </div>
           </div>
         </div>
+      </div>
+
+      {/* Stats Grid — computed from actual trades */}
+      <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
+        <StatCard
+          label="Total Trades"
+          value={String(totalTrades)}
+          sub={`${openTrades.length} open • ${closedTrades.length} closed`}
+        />
+        <StatCard
+          label="Win Rate"
+          value={closedTrades.length > 0 ? `${displayWinRate.toFixed(1)}%` : (isDemo ? '66.7%' : '—')}
+          sub={closedTrades.length > 0
+            ? `${winningTrades.length}W / ${losingTrades.length}L`
+            : closedTrades.length === 0 && openTrades.length > 0
+              ? 'Positions open'
+              : isDemo ? '3W / 2L' : 'No closed trades yet'}
+          colored={displayWinRate > 50 ? 'green' : displayWinRate > 0 ? 'red' : undefined}
+        />
+        <StatCard
+          label="Realized P&L"
+          value={closedTrades.length > 0 ? fmtShort(displayPnl) : (isDemo ? '₹1,337.00' : '—')}
+          sub={closedTrades.length > 0
+            ? displayPnl >= 0 ? 'Net profit' : 'Net loss'
+            : openTrades.length > 0 ? 'Awaiting close' : isDemo ? 'Net profit' : 'No closed trades'}
+          colored={displayPnl > 0 ? 'green' : displayPnl < 0 ? 'red' : undefined}
+        />
+        <StatCard
+          label="Avg Win / Loss"
+          value={closedTrades.length > 0
+            ? `${fmtShort(avgWin)} / ${fmtShort(Math.abs(avgLoss))}`
+            : (isDemo ? '₹450 / ₹180' : '—')}
+          sub={closedTrades.length > 0
+            ? avgWin > 0 && avgLoss < 0
+              ? `RR Ratio: ${Math.abs(avgWin / avgLoss).toFixed(2)}`
+              : 'Track record'
+            : 'No closed trades yet'}
+          colored={avgWin > Math.abs(avgLoss) ? 'green' : undefined}
+        />
       </div>
 
       {/* Trade History */}
@@ -196,44 +271,52 @@ export default function Profile() {
           <h2 className="text-base font-semibold text-[#0f1117]">
             {isDemo ? 'Demo Trade History' : 'Your Trade History'}
           </h2>
-          <span className="text-xs text-[#868e96]">{trades.length} recorded trade{trades.length === 1 ? '' : 's'}</span>
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-3 mb-4">
-          <div className="bg-white border border-[#e9ecef] rounded p-4 shadow-xs">
-            <p className="text-[10px] uppercase tracking-[0.18em] text-[#868e96]">Total trades</p>
-            <p className="mt-2 text-xl font-semibold text-[#0f1117]">{totalTrades}</p>
-          </div>
-          <div className="bg-white border border-[#e9ecef] rounded p-4 shadow-xs">
-            <p className="text-[10px] uppercase tracking-[0.18em] text-[#868e96]">Win rate</p>
-            <p className="mt-2 text-xl font-semibold text-[#0f1117]">{winRate.toFixed(1)}%</p>
-          </div>
-          <div className="bg-white border border-[#e9ecef] rounded p-4 shadow-xs">
-            <p className="text-[10px] uppercase tracking-[0.18em] text-[#868e96]">Realized P&L</p>
-            <p className={`mt-2 text-xl font-semibold ${totalPnlForAllTrades >= 0 ? 'text-[#2f9e44]' : 'text-[#e03131]'}`}>
-              ₹{fmt(totalPnlForAllTrades)}
-            </p>
+          <div className="flex items-center gap-3">
+            {openTrades.length > 0 && (
+              <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-[#1971c2] bg-[#e7f5ff] border border-[#a5d8ff] px-2.5 py-1 rounded-full">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#1c7ed6] animate-pulse" />
+                {openTrades.length} Open Position{openTrades.length > 1 ? 's' : ''}
+              </span>
+            )}
+            <span className="text-xs text-[#868e96]">{trades.length} recorded trade{trades.length === 1 ? '' : 's'}</span>
           </div>
         </div>
 
         {trades.length === 0 ? (
-          <div className="bg-white border border-[#e9ecef] rounded p-8 text-center text-[#868e96] text-xs shadow-xs">
-            No trade history recorded yet. You have not purchased anything yet.
+          <div className="bg-white border border-[#e9ecef] rounded-xl p-10 text-center shadow-xs">
+            <div className="w-12 h-12 bg-[#f1f3f5] rounded-full flex items-center justify-center mx-auto mb-3">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#adb5bd" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 3v18h18" /><path d="m19 9-5 5-4-4-3 3" />
+              </svg>
+            </div>
+            <p className="text-sm font-medium text-[#495057]">No trades recorded yet</p>
+            <p className="text-xs text-[#868e96] mt-1">Execute a trade from the Risk Management tab to see it here.</p>
           </div>
         ) : (
           <div className="space-y-4">
             {orderedDates.map((date) => {
               const dayTrades = groupedTrades[date] || []
-              const dayPnl = dayTrades.reduce((sum, trade) => sum + (Number(trade.pnl) || 0), 0)
+              const dayClosedTrades = dayTrades.filter(t => t.pnl !== null && t.pnl !== undefined)
+              const dayPnl = dayClosedTrades.reduce((sum, trade) => sum + (Number(trade.pnl) || 0), 0)
+              const dayOpenCount = dayTrades.filter(t => t.pnl === null || t.pnl === undefined).length
               return (
-                <div key={date} className="bg-white border border-[#e9ecef] rounded overflow-hidden shadow-xs">
+                <div key={date} className="bg-white border border-[#e9ecef] rounded-xl overflow-hidden shadow-xs">
                   <div className="flex items-center justify-between px-4 py-3 border-b border-[#e9ecef] bg-[#f8f9fa]">
                     <div>
                       <p className="text-xs font-semibold text-[#0f1117]">{new Date(`${date}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+                      <p className="text-[10px] text-[#868e96] mt-0.5">{dayTrades.length} trade{dayTrades.length > 1 ? 's' : ''}{dayOpenCount > 0 ? ` • ${dayOpenCount} open` : ''}</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-[10px] uppercase tracking-[0.18em] text-[#868e96]">Day P&L</p>
-                      <p className={`text-sm font-semibold ${dayPnl >= 0 ? 'text-[#2f9e44]' : 'text-[#e03131]'}`}>₹{fmt(dayPnl)}</p>
+                      {dayClosedTrades.length > 0 ? (
+                        <>
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-[#868e96]">Day P&amp;L</p>
+                          <p className={`text-sm font-semibold ${dayPnl >= 0 ? 'text-[#2f9e44]' : 'text-[#e03131]'}`}>
+                            {dayPnl >= 0 ? '+' : ''}₹{fmt(dayPnl)}
+                          </p>
+                        </>
+                      ) : (
+                        <span className="text-[10px] text-[#adb5bd] italic">Open positions</span>
+                      )}
                     </div>
                   </div>
 
@@ -245,29 +328,57 @@ export default function Profile() {
                           <th className="px-4 py-3 font-medium text-[#495057]">Type</th>
                           <th className="px-4 py-3 font-medium text-[#495057]">Qty</th>
                           <th className="px-4 py-3 font-medium text-[#495057]">Price</th>
-                          <th className="px-4 py-3 font-medium text-[#495057]">P&L</th>
+                          <th className="px-4 py-3 font-medium text-[#495057]">P&amp;L</th>
                           <th className="px-4 py-3 font-medium text-[#495057]">Status</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#e9ecef]">
-                        {dayTrades.map((trade, idx) => (
-                          <tr key={`${trade.ticker}-${trade.date}-${trade.created_at || idx}`} className="hover:bg-[#f8f9fa] transition-colors">
-                            <td className="px-4 py-3 font-medium text-[#0f1117]">{trade.ticker}</td>
-                            <td className="px-4 py-3">
-                              <span className={`inline-block px-2 py-0.5 text-[10px] font-bold rounded ${
-                                trade.type === 'BUY' ? 'bg-[#ebfbee] text-[#2f9e44]' : 'bg-[#fff5f5] text-[#e03131]'
+                        {dayTrades.map((trade, idx) => {
+                          const hasPnl = trade.pnl !== null && trade.pnl !== undefined
+                          const pnlValue = Number(trade.pnl || 0)
+                          return (
+                            <tr key={`${trade.ticker}-${trade.date}-${trade.created_at || idx}`} className="hover:bg-[#f8f9fa] transition-colors">
+                              <td className="px-4 py-3 font-medium text-[#0f1117]">
+                                <span className="font-mono">{trade.ticker}</span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className={`inline-block px-2 py-0.5 text-[10px] font-bold rounded ${
+                                  trade.type === 'BUY' ? 'bg-[#ebfbee] text-[#2f9e44]' : 'bg-[#fff5f5] text-[#e03131]'
+                                }`}>
+                                  {trade.type}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 font-mono text-xs text-[#0f1117]">{trade.qty}</td>
+                              <td className="px-4 py-3 font-mono text-xs text-[#0f1117]">₹{fmt(trade.price)}</td>
+                              <td className={`px-4 py-3 font-mono text-xs font-semibold ${
+                                !hasPnl ? 'text-[#adb5bd]' :
+                                pnlValue >= 0 ? 'text-[#2f9e44]' : 'text-[#e03131]'
                               }`}>
-                                {trade.type}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 font-mono text-xs text-[#0f1117]">{trade.qty}</td>
-                            <td className="px-4 py-3 font-mono text-xs text-[#0f1117]">₹{fmt(trade.price)}</td>
-                            <td className={`px-4 py-3 font-mono text-xs font-semibold ${Number(trade.pnl || 0) >= 0 ? 'text-[#2f9e44]' : 'text-[#e03131]'}`}>
-                              ₹{fmt(Number(trade.pnl || 0))}
-                            </td>
-                            <td className="px-4 py-3 text-[#495057] text-xs">{trade.status || 'EXECUTED'}</td>
-                          </tr>
-                        ))}
+                                {!hasPnl ? (
+                                  <span className="inline-flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-[#1c7ed6] animate-pulse" />
+                                    Open
+                                  </span>
+                                ) : (
+                                  `${pnlValue >= 0 ? '+' : ''}₹${fmt(pnlValue)}`
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-[#495057] text-xs">
+                                {hasPnl ? (
+                                  <span className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded ${
+                                    pnlValue >= 0 ? 'bg-[#ebfbee] text-[#2f9e44]' : 'bg-[#fff5f5] text-[#e03131]'
+                                  }`}>
+                                    {trade.status || 'CLOSED'}
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#1971c2] bg-[#e7f5ff] px-2 py-0.5 rounded">
+                                    ACTIVE
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -347,6 +458,25 @@ export default function Profile() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function StatCard({ label, value, sub, colored }: {
+  label: string
+  value: string
+  sub?: string
+  colored?: 'green' | 'red'
+}) {
+  return (
+    <div className="bg-white border border-[#e9ecef] rounded-xl p-4 shadow-xs">
+      <p className="text-[10px] uppercase tracking-[0.18em] text-[#868e96]">{label}</p>
+      <p className={`mt-2 text-xl font-bold font-mono ${
+        colored === 'green' ? 'text-[#2f9e44]' :
+        colored === 'red' ? 'text-[#e03131]' :
+        'text-[#0f1117]'
+      }`}>{value}</p>
+      {sub && <p className="text-[10px] text-[#adb5bd] mt-1">{sub}</p>}
     </div>
   )
 }

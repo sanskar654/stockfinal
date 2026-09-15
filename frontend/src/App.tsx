@@ -184,6 +184,7 @@ function AppContent() {
           <AlertBanner
             alert={latestAlert?.timestamp === dismissedAlertTimestamp ? null : latestAlert}
             onDismiss={() => setDismissedAlertTimestamp(latestAlert?.timestamp ?? null)}
+            onNavigate={navigateTo}
           />
           {page === 'dashboard' && (
             <Dashboard
@@ -207,7 +208,7 @@ function AppContent() {
             />
           )}
           {page === 'analytics' && (
-            <Analytics selectedCompany={selectedCompany} onSelectCompany={selectCompany} />
+            <Analytics selectedCompany={selectedCompany} onSelectCompany={selectCompany} onNavigate={navigateTo} />
           )}
           {page === 'profile' && (
             <Profile />

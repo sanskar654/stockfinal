@@ -301,7 +301,7 @@ class FyersMarketDataManager:
         return self._fallback_quote(clean_symbol)
 
     def _fallback_quote(self, symbol: str) -> Dict[str, Any]:
-        """Provides graceful fallback quote using cached price or baseline data when market is closed or unauthenticated."""
+        """Provides graceful fallback quote using cached price or realistic baseline data when market is closed or unauthenticated."""
         if symbol in self.last_quote_cache:
             cached = self.last_quote_cache[symbol].copy()
             cached["is_live_fyers"] = False
@@ -309,18 +309,77 @@ class FyersMarketDataManager:
             cached["auth_status"] = self.token_manager.status
             return cached
 
-        base = 24570.65 if "NIFTY50" in symbol else 500.0
-        return {
+        clean_symbol = symbol.replace("NSE:", "").replace("-EQ", "")
+        price = None
+        prev_close = None
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker(f"{clean_symbol}.NS")
+            hist = ticker.history(period="5d", interval="1d")
+            if not hist.empty:
+                close_series = hist["Close"].dropna()
+                if not close_series.empty:
+                    prev_close = float(close_series.iloc[-2]) if len(close_series) > 1 else float(close_series.iloc[-1])
+                    price = float(close_series.iloc[-1])
+            if price is None:
+                price = float(getattr(ticker.fast_info, "last_price", 0.0) or 0.0)
+        except Exception:
+            price = None
+
+        if price is None or price <= 0:
+            realistic_map = {
+                "NIFTY50-INDEX": 24570.65,
+                "ADANIENT": 3150.0,
+                "ADANIPORTS": 1480.0,
+                "ASIANPAINT": 2950.0,
+                "AXISBANK": 1180.0,
+                "BAJFINANCE": 6850.0,
+                "BHARTIARTL": 1939.1,
+                "BPCL": 560.0,
+                "CIPLA": 1458.8,
+                "COALINDIA": 495.2,
+                "HDFCBANK": 1680.0,
+                "ICICIBANK": 1220.0,
+                "INFY": 1850.0,
+                "ITC": 278.5,
+                "JSWSTEEL": 980.0,
+                "KOTAKBANK": 1780.0,
+                "LT": 3650.0,
+                "M&M": 2850.0,
+                "MARUTI": 12400.0,
+                "RELIANCE": 1317.0,
+                "SBIN": 840.0,
+                "SUNPHARMA": 1720.0,
+                "TATAMOTORS": 1020.0,
+                "TATASTEEL": 160.0,
+                "TCS": 2375.0,
+                "TECHM": 1470.0,
+                "TITAN": 3450.0,
+                "ULTRACEMCO": 11200.0,
+                "WIPRO": 183.1,
+            }
+            price = float(realistic_map.get(clean_symbol, realistic_map.get("NIFTY50-INDEX", 500.0)))
+            prev_close = price * 0.995
+
+        if prev_close is None or prev_close <= 0:
+            prev_close = price
+
+        change = round(price - prev_close, 2)
+        chg_pct = round((change / prev_close * 100.0) if prev_close else 0.0, 2)
+
+        quote = {
             "symbol": symbol,
-            "price": base,
-            "change": 0.0,
-            "change_percent": 0.0,
+            "price": round(price, 2),
+            "change": change,
+            "change_percent": chg_pct,
             "timestamp": datetime.now(MARKET_TZ).isoformat(),
             "market_status": get_market_status(),
             "auth_status": self.token_manager.status,
             "is_live_fyers": False,
             "source": "fallback"
         }
+        self.last_quote_cache[symbol] = quote
+        return quote
 
     def get_nifty50_summary(self) -> Dict[str, Any]:
         """Returns clean NIFTY 50 market data payload for backend REST API endpoints."""

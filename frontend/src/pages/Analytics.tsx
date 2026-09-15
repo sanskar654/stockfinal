@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { Company } from '../App'
+import type { Company, Page } from '../App'
 import { NIFTY50_COMPANIES } from '../App'
 import CandlestickChart from '../components/CandlestickChart'
 import ApiStatusBanner from '../components/ApiStatusBanner'
@@ -9,6 +9,7 @@ import { RadialBarChart, RadialBar, PolarAngleAxis, ResponsiveContainer } from '
 interface AnalyticsProps {
   selectedCompany: Company
   onSelectCompany?: (company: Company) => void
+  onNavigate?: (page: Page) => void
 }
 
 function fmt(n: number) {
@@ -17,7 +18,7 @@ function fmt(n: number) {
 
 const trendLevels = ['Strong Bearish', 'Bearish', 'Bullish', 'Strong Bullish']
 
-export default function Analytics({ selectedCompany, onSelectCompany }: AnalyticsProps) {
+export default function Analytics({ selectedCompany, onSelectCompany, onNavigate }: AnalyticsProps) {
   const [timeframe, setTimeframe] = useState<'15m' | '30m'>('15m')
   const { data: prediction, loading, error } = usePrediction(selectedCompany.ticker)
 
@@ -50,6 +51,15 @@ export default function Analytics({ selectedCompany, onSelectCompany }: Analytic
   const riskRating = prediction?.analytics?.risk_rating ?? (predictedReturn >= 0 ? 'LOW' : 'MEDIUM')
   const aiRec = prediction?.analytics?.ai_recommendation ?? (liveDirection === 'UP' ? 'BUY CALL' : 'BUY PUT')
 
+  // AI Insights cross-link fields
+  const entryZone = prediction?.ai_insights?.suggested_entry_zone ?? prediction?.analytics?.key_levels?.entry_advice ?? null
+  const targetPriceEod = prediction?.ai_insights?.target_price_eod ?? null
+  const targetReturnEod = prediction?.ai_insights?.target_return_eod_pct ?? null
+  const fullDayRR = prediction?.ai_insights?.full_day_rr_ratio ?? null
+  const capitalAllocation = prediction?.ai_insights?.capital_allocation ?? null
+  const actionableSignal = prediction?.analytics?.actionable_signal ?? prediction?.ai_insights?.actionable_signal ?? aiRec
+  const horizonExplanation = prediction?.ai_insights?.horizon_explanation ?? null
+
 
   return (
     <div className="p-4 md:p-6 space-y-4">
@@ -62,22 +72,32 @@ export default function Analytics({ selectedCompany, onSelectCompany }: Analytic
           </p>
         </div>
 
-        {onSelectCompany && (
-          <select
-            value={selectedCompany.ticker}
-            onChange={e => {
-              const company = NIFTY50_COMPANIES.find(c => c.ticker === e.target.value)
-              if (company) onSelectCompany(company)
-            }}
-            className="text-sm border border-[#e9ecef] rounded px-3 py-2 bg-white text-[#0f1117] focus:outline-none focus:border-[#1c7ed6] shadow-xs cursor-pointer font-medium"
-          >
-            {NIFTY50_COMPANIES.map(c => (
-              <option key={c.ticker} value={c.ticker}>
-                {c.ticker} — {c.name}
-              </option>
-            ))}
-          </select>
-        )}
+        <div className="flex items-center gap-2">
+          {onSelectCompany && (
+            <select
+              value={selectedCompany.ticker}
+              onChange={e => {
+                const company = NIFTY50_COMPANIES.find(c => c.ticker === e.target.value)
+                if (company) onSelectCompany(company)
+              }}
+              className="text-sm border border-[#e9ecef] rounded px-3 py-2 bg-white text-[#0f1117] focus:outline-none focus:border-[#1c7ed6] shadow-xs cursor-pointer font-medium"
+            >
+              {NIFTY50_COMPANIES.map(c => (
+                <option key={c.ticker} value={c.ticker}>
+                  {c.ticker} — {c.name}
+                </option>
+              ))}
+            </select>
+          )}
+          {onNavigate && (
+            <button
+              onClick={() => onNavigate('risk-management')}
+              className="text-xs font-semibold text-[#1c7ed6] border border-[#a5d8ff] rounded-lg px-3 py-2 hover:bg-[#e7f5ff] transition-colors flex items-center gap-1 whitespace-nowrap"
+            >
+              🛡 Risk Management →
+            </button>
+          )}
+        </div>
       </div>
 
       <ApiStatusBanner loading={loading} error={error} isLive={prediction?.is_live} />
@@ -115,6 +135,44 @@ export default function Analytics({ selectedCompany, onSelectCompany }: Analytic
         />
       </div>
 
+      {/* AI Insights strip — entry zone, EOD target, signal */}
+      {(entryZone || targetPriceEod || actionableSignal) && (
+        <div className="bg-gradient-to-r from-[#e7f5ff] to-[#f0fff4] border border-[#a5d8ff] rounded-xl p-4">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-[#495057] mb-3">AI Insights — Same Model as Risk Management</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {actionableSignal && (
+              <div className="bg-white rounded-xl p-3 border border-[#e9ecef]">
+                <p className="text-[10px] text-[#868e96] uppercase tracking-wide mb-1">Signal</p>
+                <p className={`text-sm font-bold ${isPositive ? 'text-[#2f9e44]' : 'text-[#e03131]'}`}>{actionableSignal}</p>
+              </div>
+            )}
+            {entryZone && (
+              <div className="bg-white rounded-xl p-3 border border-[#e9ecef]">
+                <p className="text-[10px] text-[#868e96] uppercase tracking-wide mb-1">Entry Zone</p>
+                <p className="text-xs font-semibold text-[#1c7ed6]">{entryZone}</p>
+              </div>
+            )}
+            {targetPriceEod && (
+              <div className="bg-white rounded-xl p-3 border border-[#e9ecef]">
+                <p className="text-[10px] text-[#868e96] uppercase tracking-wide mb-1">EOD Target</p>
+                <p className="text-sm font-bold font-mono text-[#2f9e44]">₹{fmt(targetPriceEod)}</p>
+                {targetReturnEod !== null && <p className="text-[9px] text-[#adb5bd]">+{targetReturnEod.toFixed(2)}%</p>}
+              </div>
+            )}
+            {fullDayRR && (
+              <div className="bg-white rounded-xl p-3 border border-[#e9ecef]">
+                <p className="text-[10px] text-[#868e96] uppercase tracking-wide mb-1">Full-Day R/R</p>
+                <p className="text-sm font-bold font-mono text-[#0f1117]">{fullDayRR}</p>
+                {capitalAllocation && <p className="text-[9px] text-[#adb5bd]">Alloc: {capitalAllocation}</p>}
+              </div>
+            )}
+          </div>
+          {horizonExplanation && (
+            <p className="mt-2 text-[10px] text-[#868e96] italic">📡 {horizonExplanation}</p>
+          )}
+        </div>
+      )}
+
       {/* Price Chart & Timeframe switcher */}
       <div className="bg-white border border-[#e9ecef] rounded p-4 shadow-xs">
         <div className="flex items-center justify-between mb-3">
@@ -142,7 +200,7 @@ export default function Analytics({ selectedCompany, onSelectCompany }: Analytic
           </div>
         </div>
 
-        <CandlestickChart basePrice={currentPrice} ticker={selectedCompany.ticker} />
+        <CandlestickChart basePrice={currentPrice} ticker={selectedCompany.ticker} timeframe={timeframe} />
 
         <div className="flex items-center gap-4 mt-3 pt-2.5 border-t border-[#e9ecef]">
           <LegendItem color="#2f9e44" label="Bullish Bar" />

@@ -11,26 +11,38 @@ interface Candle {
 interface CandlestickChartProps {
   basePrice: number
   ticker: string
+  timeframe?: '15m' | '30m'
 }
 
-function generateCandles(basePrice: number, count = 28): Candle[] {
+function generateCandles(basePrice: number, timeframe: '15m' | '30m' = '15m'): Candle[] {
   const candles: Candle[] = []
-  let price = basePrice * 0.98
+  let price = basePrice * 0.985
 
-  const times = []
-  for (let h = 9; h <= 15; h++) {
-    for (let m = 0; m < 60; m += 15) {
-      if (h === 9 && m < 15) continue
-      if (h === 15 && m > 30) continue
-      times.push(`${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`)
+  const stepMinutes = timeframe === '30m' ? 30 : 15
+  const count = timeframe === '30m' ? 14 : 28
+
+  const times: string[] = []
+  let currHour = 9
+  let currMin = 15
+
+  while (currHour < 15 || (currHour === 15 && currMin <= 30)) {
+    times.push(`${currHour.toString().padStart(2, '0')}:${currMin.toString().padStart(2, '0')}`)
+    currMin += stepMinutes
+    if (currMin >= 60) {
+      currHour += Math.floor(currMin / 60)
+      currMin = currMin % 60
     }
   }
 
-  for (let i = 0; i < count; i++) {
-    const change = (Math.random() - 0.48) * basePrice * 0.006
+  // Volatility multiplier is higher for 30m candles than 15m candles
+  const volMultiplier = timeframe === '30m' ? 0.009 : 0.005
+  const wickMultiplier = timeframe === '30m' ? 0.004 : 0.0025
+
+  for (let i = 0; i < Math.min(count, times.length); i++) {
+    const change = (Math.random() - 0.47) * basePrice * volMultiplier
     const open = price
     const close = price + change
-    const wick = basePrice * 0.003
+    const wick = basePrice * wickMultiplier
     const high = Math.max(open, close) + Math.random() * wick
     const low = Math.min(open, close) - Math.random() * wick
     candles.push({ time: times[i] || `${i}`, open, high, low, close })
@@ -39,8 +51,8 @@ function generateCandles(basePrice: number, count = 28): Candle[] {
   return candles
 }
 
-export default function CandlestickChart({ basePrice, ticker }: CandlestickChartProps) {
-  const candles = useMemo(() => generateCandles(basePrice), [basePrice])
+export default function CandlestickChart({ basePrice, ticker, timeframe = '15m' }: CandlestickChartProps) {
+  const candles = useMemo(() => generateCandles(basePrice, timeframe), [basePrice, timeframe, ticker])
 
   const width = 700
   const height = 280
@@ -56,7 +68,7 @@ export default function CandlestickChart({ basePrice, ticker }: CandlestickChart
 
   const chartW = width - padL - padR
   const chartH = height - padT - padB
-  const candleW = Math.max(5, (chartW / candles.length) * 0.6)
+  const candleW = Math.max(6, (chartW / candles.length) * 0.55)
 
   const toX = (i: number) => padL + (i + 0.5) * (chartW / candles.length)
   const toY = (p: number) => padT + chartH - ((p - minP) / range) * chartH
@@ -91,10 +103,10 @@ export default function CandlestickChart({ basePrice, ticker }: CandlestickChart
           const color = bullish ? '#2f9e44' : '#e03131'
           const bodyTop = toY(Math.max(c.open, c.close))
           const bodyBot = toY(Math.min(c.open, c.close))
-          const bodyH = Math.max(1.5, bodyBot - bodyTop)
+          const bodyH = Math.max(2, bodyBot - bodyTop)
           return (
             <g key={i}>
-              <line x1={x} x2={x} y1={toY(c.high)} y2={toY(c.low)} stroke={color} strokeWidth="1" />
+              <line x1={x} x2={x} y1={toY(c.high)} y2={toY(c.low)} stroke={color} strokeWidth="1.2" />
               <rect
                 x={x - candleW / 2}
                 y={bodyTop}
@@ -102,20 +114,22 @@ export default function CandlestickChart({ basePrice, ticker }: CandlestickChart
                 height={bodyH}
                 fill={color}
                 opacity={0.9}
+                rx={1}
               />
             </g>
           )
         })}
 
         {candles.map((c, i) => {
-          if (i % 4 !== 0) return null
+          const stepInterval = timeframe === '30m' ? 2 : 4
+          if (i % stepInterval !== 0) return null
           return (
             <text
               key={i}
               x={toX(i)}
               y={height - 4}
               fontSize="9"
-              fill="#adb5bd"
+              fill="#868e96"
               textAnchor="middle"
               fontFamily="DM Mono, monospace"
             >

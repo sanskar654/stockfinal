@@ -24,6 +24,7 @@ from services.fyers_auth import get_token_manager, FYERS_AUTHENTICATED, FYERS_TO
 from services.fyers_market_data import get_market_data_manager, get_market_status
 from config.settings import FYERS
 from services.trade_tracker import get_trade_tracker
+from services.user_profile_store import get_profile_store
 from inference.monitoring import run_continuous_monitoring, run_fast_price_check, register_ws_connection, unregister_ws_connection, evaluate_single_trade
 import asyncio
 
@@ -78,6 +79,25 @@ class TradeInput(BaseModel):
     direction: str
     stop_loss: float
     target_price: float
+
+
+class UserProfileUpdate(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    username: Optional[str] = None
+    phone: Optional[str] = None
+    avatar_initials: Optional[str] = None
+
+
+class UserTradeInput(BaseModel):
+    user_id: str = "usr_demo_trader"
+    date: str
+    ticker: str
+    type: str
+    qty: int
+    price: float
+    status: Optional[str] = "EXECUTED"
+    pnl: Optional[float] = None
 
 
 def _automated_daily_retrain_daemon():
@@ -255,6 +275,121 @@ def get_nifty50_market_data():
             "auth_status": token_mgr.status,
             "is_live": False
         }
+
+
+@app.get("/api/market/watchlist")
+def get_watchlist_quotes(tickers: Optional[str] = None):
+    """Returns normalized quote objects for the dashboard watchlist."""
+    from inference.ticker_utils import normalize_and_validate_ticker
+
+    requested = [t.strip().upper() for t in (tickers.split(",") if tickers else sorted(NIFTY50_TICKERS)) if t.strip()]
+    symbols = []
+    for ticker in requested:
+        try:
+            symbols.append(normalize_and_validate_ticker(ticker))
+        except ValueError:
+            continue
+
+    market_mgr = get_market_data_manager()
+    quotes = {}
+    is_live = True
+    timestamp = datetime.now(timezone.utc).isoformat()
+    for ticker in symbols:
+        quote = market_mgr.fetch_quote_with_retry(f"NSE:{ticker}-EQ")
+        quotes[ticker] = {
+            "ticker": ticker,
+            "price": quote.get("price", 0.0),
+            "change": quote.get("change", 0.0),
+            "change_percent": quote.get("change_percent", 0.0),
+            "open": quote.get("open"),
+            "high": quote.get("high"),
+            "low": quote.get("low"),
+            "volume": quote.get("volume", 0),
+        }
+        timestamp = quote.get("timestamp", timestamp)
+        is_live = is_live and bool(quote.get("is_live_fyers", False))
+
+    return {
+        "is_live": is_live,
+        "source": "fyers",
+        "timestamp": timestamp,
+        "quotes": quotes,
+    }
+
+
+def _profile_response(user_id: str, values: Optional[Dict[str, Any]] = None):
+    """Build the profile payload from the SQLite profile store and recent trades."""
+    store = get_profile_store()
+    profile = store.get_or_create_profile(user_id, values or {})
+    trades = store.get_trades(user_id)
+    pnl_values = [float(t.get("pnl", 0) or 0) for t in trades]
+    winning = sum(1 for p in pnl_values if p > 0)
+    losing = sum(1 for p in pnl_values if p < 0)
+
+    return {
+        "user_id": user_id,
+        "profile": {
+            "full_name": profile.get("full_name", "John Doe"),
+            "email": profile.get("email", "demo@virtuebyte.com"),
+            "username": profile.get("username", "johndoe"),
+            "phone": profile.get("phone", "9876543210"),
+            "avatar_initials": profile.get("avatar_initials", "JD"),
+            "registered_at": profile.get("registered_at"),
+        },
+        "stats": {
+            "total_trades": len(trades),
+            "winning_trades": winning,
+            "losing_trades": losing,
+            "win_rate_pct": round((winning / len(pnl_values)) * 100, 2) if pnl_values else 0.0,
+            "total_realized_pnl": round(sum(pnl_values), 2),
+        },
+        "recent_trades": trades,
+    }
+
+
+@app.get("/api/profile")
+def get_user_profile(
+    user_id: str = "usr_demo_trader",
+    full_name: Optional[str] = None,
+    email: Optional[str] = None,
+    username: Optional[str] = None,
+    phone: Optional[str] = None,
+    avatar_initials: Optional[str] = None,
+):
+    values = {key: value for key, value in {
+        "full_name": full_name,
+        "email": email,
+        "username": username,
+        "phone": phone,
+        "avatar_initials": avatar_initials,
+    }.items() if value is not None}
+    return _profile_response(user_id, values)
+
+
+@app.put("/api/profile")
+def update_user_profile(data: UserProfileUpdate, user_id: str = "usr_demo_trader"):
+    values = {key: value for key, value in data.model_dump().items() if value is not None}
+    get_profile_store().update_profile(user_id, values)
+    return _profile_response(user_id)
+
+
+@app.get("/api/profile/trades")
+def get_user_profile_trades(user_id: str = "usr_demo_trader"):
+    return get_profile_store().get_trades(user_id)
+
+
+@app.post("/api/profile/trades")
+def record_user_profile_trade(data: UserTradeInput):
+    return get_profile_store().add_trade(data.model_dump())
+
+
+@app.get("/api/profile/db-status")
+def profile_db_status():
+    try:
+        get_profile_store().get_or_create_profile("__healthcheck__")
+        return {"connected": True, "message": "SQLite profile database is connected.", "database": "trades.db"}
+    except Exception as exc:
+        return {"connected": False, "message": str(exc), "database": "trades.db"}
 
 
 @app.get("/health")
