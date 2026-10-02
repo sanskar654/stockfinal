@@ -551,12 +551,17 @@ def fyers_callback(auth_code: str = Query(None), auth_code_param: str = Query(No
         token = token_mgr.exchange_code_for_tokens(code)
         client = get_fyers_client()
         client.reload_and_init()
-        return HTMLResponse(content="""
+        frontend_url = os.getenv("FRONTEND_URL", "https://stockfinal-one.vercel.app")
+        return HTMLResponse(content=f"""
         <html>
+            <head>
+                <meta http-equiv="refresh" content="2;url={frontend_url}">
+            </head>
             <body style="font-family: sans-serif; background: #0f172a; color: white; padding: 40px; text-align: center;">
                 <h1 style="color: #22c55e;">🟢 FYERS Live API Authenticated Successfully!</h1>
                 <p>Access token and refresh token saved server-side. Automatic token renewal enabled.</p>
-                <p><a href="/" style="color: #38bdf8; font-size: 18px; font-weight: bold;">Return to Dashboard</a></p>
+                <p style="color: #94a3b8; font-size: 14px;">Redirecting to your React Trading Dashboard...</p>
+                <p><a href="{frontend_url}" style="display: inline-block; margin-top: 15px; background: #38bdf8; color: #0f172a; padding: 10px 24px; border-radius: 8px; font-size: 16px; font-weight: bold; text-decoration: none;">Return to Dashboard →</a></p>
             </body>
         </html>
         """)
