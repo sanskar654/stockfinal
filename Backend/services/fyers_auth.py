@@ -106,10 +106,9 @@ class FyersTokenManager:
                 logger.warning("Error reading server-side token store: %s", e)
 
         # 2. Fallback to .env if JSON store empty
-        if not self.access_token and FYERS.access_token:
-            self.access_token = FYERS.access_token
-        if not self.refresh_token and FYERS.refresh_token:
-            self.refresh_token = FYERS.refresh_token
+        if self.is_access_token_valid():
+            self.status = FYERS_AUTHENTICATED
+            self.last_error = ""
 
         return bool(self.access_token or self.refresh_token)
 
@@ -139,6 +138,7 @@ class FyersTokenManager:
         FYERS.reload()
 
         self.status = FYERS_AUTHENTICATED
+        self.last_error = ""
         logger.info("[INFO] FYERS authentication loaded & tokens securely saved server-side.")
 
     def is_access_token_valid(self) -> bool:
