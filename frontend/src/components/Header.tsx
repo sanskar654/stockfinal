@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import type { Company } from '../App'
-import { NIFTY50_COMPANIES } from '../App'
+import { ALL_INSTRUMENTS } from '../App'
 import { useAuth } from '../context/AuthContext'
+import { getMarketStatus, getMarketStatusLabel, getMarketStatusColor } from '../lib/marketStatus'
 
 interface HeaderProps {
   selectedCompany: Company
@@ -26,11 +27,17 @@ export default function Header({
   const userRef = useRef<HTMLDivElement>(null)
 
   const filtered = query.length > 0
-    ? NIFTY50_COMPANIES.filter(c =>
+    ? ALL_INSTRUMENTS.filter(c =>
         c.ticker.toLowerCase().includes(query.toLowerCase()) ||
         c.name.toLowerCase().includes(query.toLowerCase())
       )
-    : NIFTY50_COMPANIES
+    : ALL_INSTRUMENTS
+
+  const filteredIndices = filtered.filter(c => c.isIndex)
+  const filteredStocks = filtered.filter(c => !c.isIndex)
+  const marketStatus = getMarketStatus()
+  const mktColor = getMarketStatusColor(marketStatus)
+  const mktLabel = getMarketStatusLabel(marketStatus)
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -72,8 +79,39 @@ export default function Header({
             />
           </div>
           {open && (
-            <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-[#e9ecef] rounded-xl shadow-xl z-[60] max-h-64 overflow-y-auto">
-              {filtered.map(company => (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-[#e9ecef] rounded-xl shadow-xl z-[60] max-h-72 overflow-y-auto">
+              {filteredIndices.length > 0 && (
+                <>
+                  <div className="px-4 py-1.5 bg-[#f8f9fa] border-b border-[#e9ecef]">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-[#868e96]">📊 Indices</span>
+                  </div>
+                  {filteredIndices.map(company => (
+                    <button
+                      key={company.ticker}
+                      onClick={() => {
+                        onSelectCompany(company)
+                        setQuery('')
+                        setOpen(false)
+                      }}
+                      className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-[#e7f5ff] transition-colors"
+                    >
+                      <div>
+                        <span className="text-sm font-medium text-[#1c7ed6]">{company.ticker}</span>
+                        <span className="text-xs text-[#868e96] ml-2">{company.name}</span>
+                      </div>
+                      <span className={`text-xs font-mono font-medium ${company.changePct >= 0 ? 'text-[#2f9e44]' : 'text-[#e03131]'}`}>
+                        {company.changePct >= 0 ? '+' : ''}{company.changePct.toFixed(2)}%
+                      </span>
+                    </button>
+                  ))}
+                </>
+              )}
+              {filteredStocks.length > 0 && filteredIndices.length > 0 && (
+                <div className="px-4 py-1.5 bg-[#f8f9fa] border-b border-[#e9ecef] border-t">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-[#868e96]">🏢 Stocks</span>
+                </div>
+              )}
+              {filteredStocks.map(company => (
                 <button
                   key={company.ticker}
                   onClick={() => {
@@ -92,15 +130,18 @@ export default function Header({
                   </span>
                 </button>
               ))}
+              {filtered.length === 0 && (
+                <div className="px-4 py-3 text-sm text-[#868e96] text-center">No instruments found.</div>
+              )}
             </div>
           )}
         </div>
       </div>
 
       <div className="hidden sm:flex items-center gap-3 shrink-0 ml-auto">
-        <div className="inline-flex items-center gap-1.5 rounded-full border border-[#dfe9f3] bg-[#f3f9ff] px-2.5 py-1">
-          <span className="w-1.5 h-1.5 rounded-full bg-[#2f9e44] animate-pulse" />
-          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#2f9e44]">Live</span>
+        <div className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 ${mktColor.bg} border-current/10`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${mktColor.dot} ${marketStatus === 'open' ? 'animate-pulse' : ''}`} />
+          <span className={`text-[10px] font-semibold uppercase tracking-[0.12em] ${mktColor.text}`}>{mktLabel}</span>
         </div>
         <div className="h-3 w-px bg-[#e9ecef]" />
         <span className="text-xs text-[#495057] font-medium">FYERS Connected</span>

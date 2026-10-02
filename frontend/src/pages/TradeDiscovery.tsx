@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import type { Company, TradeInputs } from '../App'
-import { NIFTY50_COMPANIES } from '../App'
+import { NIFTY50_COMPANIES, ALL_INSTRUMENTS } from '../App'
 
 interface TradeDiscoveryProps {
   selectedCompany: Company
@@ -19,14 +19,17 @@ export default function TradeDiscovery({ selectedCompany, tradeInputs, onAnalyze
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
-  const currentCompany = NIFTY50_COMPANIES.find(c => c.ticker === ticker) || selectedCompany
+  const currentCompany = ALL_INSTRUMENTS.find(c => c.ticker === ticker) || selectedCompany
 
   const filtered = ticker.length > 0
-    ? NIFTY50_COMPANIES.filter(c =>
+    ? ALL_INSTRUMENTS.filter(c =>
         c.ticker.toLowerCase().includes(ticker.toLowerCase()) ||
         c.name.toLowerCase().includes(ticker.toLowerCase())
       )
-    : NIFTY50_COMPANIES
+    : ALL_INSTRUMENTS
+
+  const filteredIndices = filtered.filter(c => c.isIndex)
+  const filteredStocks = filtered.filter(c => !c.isIndex)
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -43,8 +46,12 @@ export default function TradeDiscovery({ selectedCompany, tradeInputs, onAnalyze
 
   const handleTickerChange = (t: string) => {
     setTicker(t.toUpperCase())
-    const company = NIFTY50_COMPANIES.find(c => c.ticker === t.toUpperCase())
-    if (company) setLimitPrice(company.price.toString())
+    const company = ALL_INSTRUMENTS.find(c => c.ticker === t.toUpperCase())
+    if (company) {
+      setLimitPrice(company.price.toString())
+      // Auto-set lot size for index instruments
+      if (company.lotSize) setQty(company.lotSize.toString())
+    }
   }
 
   return (
@@ -81,7 +88,41 @@ export default function TradeDiscovery({ selectedCompany, tradeInputs, onAnalyze
 
                 {open && (
                   <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-50 max-h-64 overflow-y-auto">
-                    {filtered.map(company => (
+                    {filteredIndices.length > 0 && (
+                      <>
+                        <div className="px-4 py-1.5 bg-gray-50 border-b border-gray-100">
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">📊 Indices</span>
+                        </div>
+                        {filteredIndices.map(company => (
+                          <button
+                            key={company.ticker}
+                            type="button"
+                            onClick={() => {
+                              setTicker(company.ticker)
+                              setLimitPrice(company.price.toString())
+                              if (company.lotSize) setQty(company.lotSize.toString())
+                              setOpen(false)
+                            }}
+                            className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-blue-50 transition-colors border-b border-gray-50 last:border-0"
+                          >
+                            <div>
+                              <span className="text-sm font-medium text-blue-700">{company.ticker}</span>
+                              <span className="text-xs text-gray-500 ml-2">{company.name}</span>
+                              {company.lotSize && <span className="text-[10px] text-gray-400 ml-1">(Lot: {company.lotSize})</span>}
+                            </div>
+                            <span className={`text-xs font-mono font-medium ${company.changePct >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                              {company.changePct >= 0 ? '+' : ''}{company.changePct.toFixed(2)}%
+                            </span>
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    {filteredStocks.length > 0 && filteredIndices.length > 0 && (
+                      <div className="px-4 py-1.5 bg-gray-50 border-b border-gray-100 border-t">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">🏢 Stocks</span>
+                      </div>
+                    )}
+                    {filteredStocks.map(company => (
                       <button
                         key={company.ticker}
                         type="button"
@@ -103,7 +144,7 @@ export default function TradeDiscovery({ selectedCompany, tradeInputs, onAnalyze
                     ))}
                     {filtered.length === 0 && (
                       <div className="px-4 py-3 text-sm text-gray-500 text-center">
-                        No companies found.
+                        No instruments found.
                       </div>
                     )}
                   </div>

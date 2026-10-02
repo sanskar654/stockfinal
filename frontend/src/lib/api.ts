@@ -137,6 +137,13 @@ export function recordUserTrade(payload: Partial<TradeHistoryItem>): Promise<Tra
   })
 }
 
+export function closeUserTrade(tradeId: number | string, exitPrice: number): Promise<TradeHistoryItem> {
+  return request<TradeHistoryItem>(`/api/profile/trades/${tradeId}/close`, {
+    method: 'POST',
+    body: JSON.stringify({ exit_price: exitPrice }),
+  })
+}
+
 export interface ActiveTradeResponse {
   message: string
   trade_id: number

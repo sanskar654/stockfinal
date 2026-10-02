@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react'
 import type { Company, Page } from '../App'
-import { NIFTY50_COMPANIES } from '../App'
+import { NIFTY50_COMPANIES, INDEX_INSTRUMENTS } from '../App'
 import MiniSparkline from '../components/MiniSparkline'
 import ApiStatusBanner from '../components/ApiStatusBanner'
 import { usePrediction } from '../hooks/usePrediction'
 import { useMarketSummary } from '../hooks/useMarketSummary'
 import { getWatchlistQuotes } from '../lib/api'
 import type { WatchlistQuoteItem } from '../types/api'
+import { getMarketStatus, getMarketStatusLabel, getMarketStatusColor, getClosedReason } from '../lib/marketStatus'
+import type { MarketStatus } from '../lib/marketStatus'
 
 interface DashboardProps {
   selectedCompany: Company
@@ -25,6 +27,13 @@ export default function Dashboard({ selectedCompany, onSelectCompany, onNavigate
   const { data: marketSummary } = useMarketSummary()
   const [watchlistQuotes, setWatchlistQuotes] = useState<Record<string, WatchlistQuoteItem>>({})
   const [watchlistLive, setWatchlistLive] = useState<boolean>(false)
+  const [marketStatus, setMarketStatus] = useState<MarketStatus>(getMarketStatus())
+
+  // Refresh market status every 60 seconds
+  useEffect(() => {
+    const interval = setInterval(() => setMarketStatus(getMarketStatus()), 60_000)
+    return () => clearInterval(interval)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -76,32 +85,65 @@ export default function Dashboard({ selectedCompany, onSelectCompany, onNavigate
   const marketIndices = [
     {
       name: 'NIFTY 50',
+      ticker: 'NIFTY50',
       value: marketSummary ? fmt(marketSummary.price) : '24,853.15',
       change: marketSummary ? `${marketSummary.change >= 0 ? '+' : ''}${fmt(marketSummary.change)}` : '+112.40',
       pct: marketSummary ? `${marketSummary.change_percent >= 0 ? '+' : ''}${marketSummary.change_percent.toFixed(2)}%` : '+0.45%',
       positive: marketSummary ? marketSummary.change_percent >= 0 : true,
     },
-    { name: 'BANKNIFTY', value: '53,284.90', change: '+287.35', pct: '+0.54%', positive: true },
-    { name: 'FINNIFTY', value: '23,912.60', change: '-45.20', pct: '-0.19%', positive: false },
-    { name: 'INDIA VIX', value: '13.42', change: '-0.58', pct: '-4.15%', positive: false },
-    { name: 'PCR', value: '0.92', change: '+0.04', pct: '+4.55%', positive: true },
+    { name: 'BANKNIFTY', ticker: 'BANKNIFTY', value: '53,284.90', change: '+287.35', pct: '+0.54%', positive: true },
+    { name: 'FINNIFTY', ticker: 'FINNIFTY', value: '23,912.60', change: '-45.20', pct: '-0.19%', positive: false },
+    { name: 'INDIA VIX', ticker: '', value: '13.42', change: '-0.58', pct: '-4.15%', positive: false },
+    { name: 'PCR', ticker: '', value: '0.92', change: '+0.04', pct: '+4.55%', positive: true },
   ]
+
+  const mktColor = getMarketStatusColor(marketStatus)
+  const mktLabel = getMarketStatusLabel(marketStatus)
 
   return (
     <div className="p-4 md:p-6 space-y-5">
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        {marketIndices.map(idx => (
-          <div key={idx.name} className="bg-white border border-[#e9ecef] rounded-2xl p-3 shadow-sm">
-            <p className="text-[10px] text-[#868e96] font-medium uppercase tracking-[0.12em] mb-1.5">{idx.name}</p>
-            <p className="text-sm font-semibold text-[#0f1117] font-mono">{idx.value}</p>
-            <div className="flex items-center justify-between mt-2">
-              <span className={`text-xs font-mono ${idx.positive ? 'text-[#2f9e44]' : 'text-[#e03131]'}`}>
-                {idx.change} ({idx.pct})
-              </span>
-              <MiniSparkline positive={idx.positive} width={42} height={18} />
-            </div>
+
+      {/* Market Closed Banner */}
+      {marketStatus !== 'open' && (
+        <div className={`flex items-center gap-3 rounded-2xl px-4 py-3 border ${marketStatus === 'closed' ? 'bg-[#fff5f5] border-[#ffc9c9]' : 'bg-[#fff9db] border-[#ffe8a8]'}`}>
+          <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${mktColor.dot}`} />
+          <div className="flex-1">
+            <p className={`text-sm font-bold ${mktColor.text}`}>{mktLabel}</p>
+            <p className="text-xs text-[#868e96] mt-0.5">
+              {getClosedReason()} <span className="text-[#adb5bd]">• Predictions are still active for testing.</span>
+            </p>
           </div>
-        ))}
+          <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border ${mktColor.bg} ${mktColor.text}`}>
+            {mktLabel}
+          </span>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        {marketIndices.map(idx => {
+          const indexInstrument = idx.ticker ? INDEX_INSTRUMENTS.find(i => i.ticker === idx.ticker) : null
+          return (
+            <div
+              key={idx.name}
+              className={`bg-white border border-[#e9ecef] rounded-2xl p-3 shadow-sm ${indexInstrument ? 'cursor-pointer hover:border-[#1c7ed6]/40 hover:shadow-md transition-all' : ''} ${indexInstrument && selectedCompany.ticker === idx.ticker ? 'ring-2 ring-[#1c7ed6]/30 border-[#1c7ed6]/40' : ''}`}
+              onClick={() => {
+                if (indexInstrument) onSelectCompany(indexInstrument)
+              }}
+            >
+              <div className="flex items-center gap-1.5 mb-1.5">
+                {indexInstrument && <span className="text-[9px]">📊</span>}
+                <p className="text-[10px] text-[#868e96] font-medium uppercase tracking-[0.12em]">{idx.name}</p>
+              </div>
+              <p className="text-sm font-semibold text-[#0f1117] font-mono">{idx.value}</p>
+              <div className="flex items-center justify-between mt-2">
+                <span className={`text-xs font-mono ${idx.positive ? 'text-[#2f9e44]' : 'text-[#e03131]'}`}>
+                  {idx.change} ({idx.pct})
+                </span>
+                <MiniSparkline positive={idx.positive} width={42} height={18} />
+              </div>
+            </div>
+          )
+        })}
       </div>
 
       <ApiStatusBanner loading={loading} error={error} isLive={prediction?.is_live ?? marketSummary?.is_live} />

@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
 import {
   getUserProfile,
   updateUserProfile,
+  closeUserTrade,
 } from '../lib/api'
 import type {
   ProfileResponse,
@@ -46,6 +48,11 @@ export default function Profile() {
   const [isEditing, setIsEditing] = useState<boolean>(false)
   const [saving, setSaving] = useState<boolean>(false)
   const [feedback, setFeedback] = useState<string | null>(null)
+
+  // Close trade modal state
+  const [closingTrade, setClosingTrade] = useState<TradeHistoryItem | null>(null)
+  const [exitPrice, setExitPrice] = useState<string>('')
+  const [closingLoading, setClosingLoading] = useState<boolean>(false)
 
   // Edit form state
   const [editForm, setEditForm] = useState({
@@ -109,6 +116,34 @@ export default function Profile() {
       setFeedback(`Failed to update profile: ${err.message || err}`)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleOpenCloseModal = (trade: TradeHistoryItem) => {
+    setClosingTrade(trade)
+    setExitPrice(String(trade.price))
+  }
+
+  const handleConfirmClose = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!closingTrade) return
+    const numericExit = parseFloat(exitPrice)
+    if (isNaN(numericExit) || numericExit <= 0) {
+      setFeedback('Please enter a valid positive exit price.')
+      return
+    }
+    setClosingLoading(true)
+    setFeedback(null)
+    try {
+      await closeUserTrade(closingTrade.id, numericExit)
+      setClosingTrade(null)
+      setFeedback(`Trade on ${closingTrade.ticker} closed successfully!`)
+      await loadProfileData()
+      setTimeout(() => setFeedback(null), 4000)
+    } catch (err: any) {
+      setFeedback(`Failed to close trade: ${err.message || err}`)
+    } finally {
+      setClosingLoading(false)
     }
   }
 
@@ -330,6 +365,7 @@ export default function Profile() {
                           <th className="px-4 py-3 font-medium text-[#495057]">Price</th>
                           <th className="px-4 py-3 font-medium text-[#495057]">P&amp;L</th>
                           <th className="px-4 py-3 font-medium text-[#495057]">Status</th>
+                          <th className="px-4 py-3 font-medium text-[#495057] text-right">Action</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#e9ecef]">
@@ -376,6 +412,19 @@ export default function Profile() {
                                   </span>
                                 )}
                               </td>
+                              <td className="px-4 py-3 text-right">
+                                {!hasPnl ? (
+                                  <button
+                                    onClick={() => handleOpenCloseModal(trade)}
+                                    className="px-2.5 py-1 text-[11px] font-semibold text-[#c92a2a] bg-[#fff5f5] hover:bg-[#ffe3e3] border border-[#ffc9c9] rounded transition-colors cursor-pointer"
+                                    title="Exit this position and realize P&L"
+                                  >
+                                    Close Position
+                                  </button>
+                                ) : (
+                                  <span className="text-[11px] text-[#adb5bd] font-mono">Settled</span>
+                                )}
+                              </td>
                             </tr>
                           )
                         })}
@@ -389,10 +438,85 @@ export default function Profile() {
         )}
       </div>
 
+      {/* Close Position Modal */}
+      {closingTrade && createPortal(
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs transition-all"
+          onClick={(e) => { if (e.target === e.currentTarget) setClosingTrade(null) }}
+        >
+          <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-2xl border border-[#e9ecef] relative animate-in fade-in zoom-in-95 duration-150">
+            <h3 className="text-base font-bold text-[#0f1117] mb-1">Close Position — {closingTrade.ticker}</h3>
+            <p className="text-xs text-[#868e96] mb-4">
+              Enter your exit price to realize the profit or loss on this trade.
+            </p>
+
+            <form onSubmit={handleConfirmClose} className="space-y-4 text-xs">
+              <div className="bg-[#f8f9fa] border border-[#e9ecef] rounded-lg p-3 space-y-1.5 font-mono">
+                <div className="flex justify-between text-xs">
+                  <span className="text-[#868e96]">Side / Quantity:</span>
+                  <span className="font-semibold text-[#0f1117]">{closingTrade.type} {closingTrade.qty} units</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-[#868e96]">Entry Price:</span>
+                  <span className="font-semibold text-[#0f1117]">₹{fmt(closingTrade.price)}</span>
+                </div>
+                <div className="flex justify-between text-xs pt-1.5 border-t border-[#e9ecef]">
+                  <span className="text-[#868e96]">Est. Realized P&amp;L:</span>
+                  {(() => {
+                    const exit = parseFloat(exitPrice) || 0
+                    const pnlEst = closingTrade.type === 'BUY'
+                      ? (exit - closingTrade.price) * closingTrade.qty
+                      : (closingTrade.price - exit) * closingTrade.qty
+                    return (
+                      <span className={`font-bold ${pnlEst >= 0 ? 'text-[#2f9e44]' : 'text-[#e03131]'}`}>
+                        {pnlEst >= 0 ? '+' : ''}₹{fmt(pnlEst)}
+                      </span>
+                    )
+                  })()}
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-medium text-[#495057] mb-1">Exit Price (₹)</label>
+                <input
+                  type="number"
+                  step="0.05"
+                  value={exitPrice}
+                  onChange={e => setExitPrice(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 border border-[#ced4da] rounded focus:outline-hidden focus:border-[#1971c2] font-mono text-sm"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setClosingTrade(null)}
+                  className="px-3 py-1.5 text-xs text-[#495057] hover:bg-[#f1f3f5] rounded border border-[#ced4da] cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={closingLoading}
+                  className="px-4 py-1.5 text-xs font-semibold text-white bg-[#c92a2a] hover:bg-[#b02525] rounded transition-colors disabled:opacity-50 cursor-pointer"
+                >
+                  {closingLoading ? 'Closing...' : 'Confirm Exit'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {/* Edit Profile Modal */}
-      {isEditing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-lg max-w-md w-full p-6 shadow-xl border border-[#e9ecef]">
+      {isEditing && createPortal(
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs transition-all"
+          onClick={(e) => { if (e.target === e.currentTarget) setIsEditing(false) }}
+        >
+          <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-2xl border border-[#e9ecef] relative animate-in fade-in zoom-in-95 duration-150">
             <h3 className="text-base font-bold text-[#0f1117] mb-1">Edit Profile Details</h3>
             <p className="text-xs text-[#868e96] mb-4">Updates will be saved directly into the local SQLite profile database.</p>
 
@@ -442,21 +566,22 @@ export default function Profile() {
                 <button
                   type="button"
                   onClick={() => setIsEditing(false)}
-                  className="px-3 py-1.5 font-semibold text-[#495057] hover:bg-[#f1f3f5] rounded border border-[#ced4da]"
+                  className="px-3 py-1.5 font-semibold text-[#495057] hover:bg-[#f1f3f5] rounded border border-[#ced4da] cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={saving}
-                  className="px-4 py-1.5 font-semibold text-white bg-[#1971c2] hover:bg-[#1864ab] rounded transition-colors disabled:opacity-50"
+                  className="px-4 py-1.5 font-semibold text-white bg-[#1971c2] hover:bg-[#1864ab] rounded transition-colors disabled:opacity-50 cursor-pointer"
                 >
                   {saving ? 'Saving...' : 'Save Changes'}
                 </button>
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

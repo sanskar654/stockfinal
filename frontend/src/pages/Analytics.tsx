@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Company, Page } from '../App'
-import { NIFTY50_COMPANIES } from '../App'
+import { NIFTY50_COMPANIES, ALL_INSTRUMENTS } from '../App'
 import CandlestickChart from '../components/CandlestickChart'
 import ApiStatusBanner from '../components/ApiStatusBanner'
 import { usePrediction } from '../hooks/usePrediction'
@@ -77,16 +77,25 @@ export default function Analytics({ selectedCompany, onSelectCompany, onNavigate
             <select
               value={selectedCompany.ticker}
               onChange={e => {
-                const company = NIFTY50_COMPANIES.find(c => c.ticker === e.target.value)
+                const company = ALL_INSTRUMENTS.find(c => c.ticker === e.target.value)
                 if (company) onSelectCompany(company)
               }}
               className="text-sm border border-[#e9ecef] rounded px-3 py-2 bg-white text-[#0f1117] focus:outline-none focus:border-[#1c7ed6] shadow-xs cursor-pointer font-medium"
             >
-              {NIFTY50_COMPANIES.map(c => (
-                <option key={c.ticker} value={c.ticker}>
-                  {c.ticker} — {c.name}
-                </option>
-              ))}
+              <optgroup label="📊 Indices">
+                {ALL_INSTRUMENTS.filter(c => c.isIndex).map(c => (
+                  <option key={c.ticker} value={c.ticker}>
+                    {c.ticker} — {c.name}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="🏢 NIFTY 50 Stocks">
+                {NIFTY50_COMPANIES.map(c => (
+                  <option key={c.ticker} value={c.ticker}>
+                    {c.ticker} — {c.name}
+                  </option>
+                ))}
+              </optgroup>
             </select>
           )}
           {onNavigate && (

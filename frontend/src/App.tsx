@@ -21,6 +21,10 @@ export interface Company {
   price: number
   change: number
   changePct: number
+  /** True for index instruments like NIFTY50, BANKNIFTY */
+  isIndex?: boolean
+  /** Default lot size for index instruments */
+  lotSize?: number
 }
 
 export interface TradeInputs {
@@ -84,6 +88,16 @@ export const NIFTY50_COMPANIES: Company[] = [
   { ticker: 'WIPRO', name: 'Wipro', sector: 'IT', price: 543.20, change: -4.80, changePct: -0.88 },
 ]
 
+/** Index instruments — NIFTY 50, BANKNIFTY, FINNIFTY */
+export const INDEX_INSTRUMENTS: Company[] = [
+  { ticker: 'NIFTY50', name: 'NIFTY 50 Index', sector: 'Index', price: 24853.15, change: 112.40, changePct: 0.45, isIndex: true, lotSize: 25 },
+  { ticker: 'BANKNIFTY', name: 'Bank NIFTY Index', sector: 'Index', price: 53284.90, change: 287.35, changePct: 0.54, isIndex: true, lotSize: 15 },
+  { ticker: 'FINNIFTY', name: 'FIN NIFTY Index', sector: 'Index', price: 23912.60, change: -45.20, changePct: -0.19, isIndex: true, lotSize: 25 },
+]
+
+/** All selectable instruments: indices first, then stocks */
+export const ALL_INSTRUMENTS: Company[] = [...INDEX_INSTRUMENTS, ...NIFTY50_COMPANIES]
+
 function AppContent() {
   const { isAuthenticated } = useAuth()
   const [page, setPage] = useState<Page>('dashboard')
@@ -126,7 +140,7 @@ function AppContent() {
 
   const analyzeMyTrade = useCallback((inputs: TradeInputs) => {
     setTradeInputs(inputs)
-    const company = NIFTY50_COMPANIES.find(c => c.ticker === inputs.ticker)
+    const company = ALL_INSTRUMENTS.find(c => c.ticker === inputs.ticker)
     if (company) setSelectedCompany(company)
     navigateTo('risk-management')
   }, [navigateTo])
