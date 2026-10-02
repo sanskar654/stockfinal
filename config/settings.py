@@ -27,7 +27,7 @@ class FyersSettings:
     secret_key: str = os.getenv("FYERS_SECRET_KEY", "").strip()
     access_token: str = os.getenv("FYERS_ACCESS_TOKEN", "").strip()
     refresh_token: str = os.getenv("FYERS_REFRESH_TOKEN", "").strip()
-    redirect_url: str = _raw_config.get("fyers", {}).get("redirect_url", "http://127.0.0.1:8000/fyers/callback")
+    redirect_url: str = os.getenv("FYERS_REDIRECT_URL", _raw_config.get("fyers", {}).get("redirect_url", "http://127.0.0.1:8000/fyers/callback")).strip()
     token_store_path: Path = BASE_DIR / "data" / "live" / "fyers_tokens.json"
     pin: str = os.getenv("FYERS_PIN", "").strip()
     totp_key: str = os.getenv("FYERS_TOTP_KEY", "").strip()
@@ -40,6 +40,7 @@ class FyersSettings:
         self.secret_key = os.getenv("FYERS_SECRET_KEY", "").strip()
         self.access_token = os.getenv("FYERS_ACCESS_TOKEN", "").strip()
         self.refresh_token = os.getenv("FYERS_REFRESH_TOKEN", "").strip()
+        self.redirect_url = os.getenv("FYERS_REDIRECT_URL", _raw_config.get("fyers", {}).get("redirect_url", "http://127.0.0.1:8000/fyers/callback")).strip()
         self.pin = os.getenv("FYERS_PIN", "").strip()
         self.totp_key = os.getenv("FYERS_TOTP_KEY", "").strip()
 
