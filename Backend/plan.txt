@@ -1,0 +1,210 @@
+=========================================================================
+  DEPLOYMENT PLAN FOR ML TRADING ENGINE BACKEND + FRONTEND
+  (Simple, Non-Technical Explanation for Manager Review)
+=========================================================================
+
+-------------------------------------------------------------------------
+1. WHAT WE NEED TO "DEPLOY"
+-------------------------------------------------------------------------
+
+We have 2 things that must run together for customers to use the app:
+
+  - BACKEND:  The "brain + database" part. It holds the AI prediction
+              models, talks live to Fyers stock API 24/7, tracks active
+              trades, remembers login sessions, and runs the overnight
+              monitoring + daily model retraining jobs.
+
+  - FRONTEND: The customer dashboard website (the green/yellow/red
+              terminal screen with prediction cards and buttons).
+
+Right now both run only on the developer's laptop. "Deploying" means
+moving both onto a computer that stays ON 24/7, connected to the
+internet, so anyone with a link can open it.
+
+
+-------------------------------------------------------------------------
+2. SIMPLE ANALOGY: STORE + WAREHOUSE + SAFE
+-------------------------------------------------------------------------
+
+Think of the app like a 24/7 retail shop:
+
+  - FRONTEND  = Store showroom  (customers walk in, click buttons)
+  - BACKEND   = Warehouse       (24/7 staff, orders processed, cameras
+                                 running overnight, inventory tracked)
+  - STORAGE   = A SAFE on the warehouse floor  (holds the Fyers
+                 "key card" + active trade tracking files)
+
+Deploying correctly = showroom opens, warehouse staff is on duty 24/7,
+and the safe NEVER gets emptied when nobody is looking.
+
+
+-------------------------------------------------------------------------
+3. RECOMMENDED PLAN  --  ~$5 / MONTH TOTAL  --  ZERO HEADACHES
+-------------------------------------------------------------------------
+
+SUMMARY:
+  Rent one cheap always-on computer (~$4/mo), put our software on it
+  using a packaging system called Docker (free), connect it to the
+  internet for free using Cloudflare (free). That's everything.
+
+IN DETAIL (3 pieces):
+
+  PIECE 1 - HETZNER CX11 VIRTUAL MACHINE  ($4.15 / month)
+  -------------------------------------------------------
+    We rent one small dedicated always-on computer from a company
+    called Hetzner. For ~$4/month we get:
+      - 2 GB RAM, 1 vCPU, 20 GB of REAL PERMANENT HARD DISK
+      - Runs 24/7, no random shutdowns, no idle timeouts
+      - The 20 GB disk is PERMANENT. It survives reboots, software
+        updates, code pushes. This is the "SAFE" in our analogy - it
+        holds the Fyers login key card, active trade files, etc.
+        Nothing ever gets wiped unless WE delete it.
+    (Location: Germany - works fine for Fyers India API calls.)
+
+  PIECE 2 - DOCKER + DOCKER COMPOSE  (FREE)
+  ------------------------------------------
+    Docker is like a professional moving company. It packs EVERYTHING
+    that works on the developer's laptop:
+      - Python, AI libraries, prediction models
+      - Backend code + the dashboard website code
+      - All settings that make it run correctly
+    ...into ONE sealed "shipping container" (a Docker image). This same
+    container is dropped into the rented Hetzner machine, 100%
+    identical. If predictions work on the laptop, they work the exact
+    same on the server - NO accuracy loss, NO "works locally fails on
+    server" surprises.
+    Docker also auto-restarts the app overnight if the machine power
+    flickers or the app crashes.
+
+  PIECE 3 - CLOUDFLARE TUNNEL + DNS  (FREE FOREVER)
+  --------------------------------------------------
+    Cloudflare gives us, for free:
+      - A public web address  (e.g.  https://trade.yourcompany.com)
+      - Free HTTPS / SSL  (the 🔒 lock icon in the browser address bar,
+        required by Fyers OAuth)
+      - Free firewall / DDoS protection
+    Most importantly: Cloudflare Tunnel connects users to our app
+    WITHOUT exposing any open ports on the Hetzner machine. Hackers
+    cannot attack a machine that has no open doors. Zero config, zero
+    monthly cost.
+    If we do not own a domain name yet, Cloudflare gives a free
+    temporary address for testing immediately.
+
+
+  FRONTEND DEPLOYMENT - $0 EXTRA
+  -------------------------------
+    The customer dashboard website is ALREADY BUILT INTO the same
+    software package as the backend. When we deploy the Docker
+    container, the dashboard ships automatically, on the same URL.
+    No separate hosting bill, no separate deploy step, no CORS
+    errors, no version mismatch between dashboard and API. It's the
+    cheapest, simplest, and most correct way.
+
+
+  DAILY LOGIN GUARANTEE
+  ----------------------
+    The Fyers "login key card" (both the daily access token and the
+    14-day refresh token) are stored in the Hetzner 20 GB permanent
+    safe. Every 24 hours, when the daily token expires, our app
+    silently uses the 14-day renewal card to fetch a new daily key -
+    completely invisible to admin and users.
+
+    Manual OAuth browser login is required ONLY ONCE EVERY 14 DAYS.
+    (That 14-day limit is a Fyers platform rule, like a passport
+    renewal - we cannot make it longer.)
+
+
+  TOTAL COST
+  -----------
+    Hetzner CX11 machine ........ $4.15 / month
+    Docker + Compose ............ $0
+    Cloudflare Tunnel + HTTPS ... $0
+    Frontend dashboard .......... $0 (included in container)
+    Domain name (optional) ...... $1-15 / year if we want a custom one
+    -----------------------------------------------------------------
+    TOTAL RUN COST .............. ~$5 / month
+
+
+  SETUP TIME
+  -----------
+    First-time setup (server, Docker, Cloudflare) ... ~30 minutes
+    Future code updates (push + deploy) .............. ~10 seconds each
+    Admin manual login ............................... Once per 14 days
+
+
+-------------------------------------------------------------------------
+4. WHY RENDER ALONE IS NOT GOOD ENOUGH
+-------------------------------------------------------------------------
+
+Render (and similar "easy platform" services like Railway, Vercel)
+look cheap on the homepage. They break our app in 4 specific ways.
+Here is why (in plain words):
+
+  PROBLEM 1 - THEY EMPTY OUR SAFE ON EVERY UPDATE / RESTART
+  -----------------------------------------------------------
+    Render's default filesystem is "EPHEMERAL" = disposable.
+    Every time we deploy a code change, or every few days when Render
+    restarts our instance internally, they WIPE THE ENTIRE HARD DRIVE
+    back to exactly what is in GitHub. That means:
+      - Our Fyers 14-day refresh key card gets deleted.
+      - Active trade tracking files get deleted.
+    Result: Auto-renewal cannot work. Admin has to do the full Fyers
+    browser login AGAIN, multiple times a week. Not once every 14
+    days. (We fixed this in our code, but auto-renewal cannot work if
+    the renewal key card itself keeps getting thrown in the trash.)
+
+  PROBLEM 2 - THEY CLOSE THE WAREHOUSE AFTER 15 MINUTES IDLE
+  ------------------------------------------------------------
+    On Render's FREE tier: if no customer opens the dashboard for
+    15 minutes, Render SHUTS DOWN the entire backend to save money.
+    Our "night shift" (24/7 trade monitoring, stop-loss alerts, 4 AM
+    daily model retraining) is killed. Trades go unmonitored, alerts
+    don't fire, customers lose money.
+    (Paid Render instance fixes this, but costs more.)
+
+  PROBLEM 3 - PAID RENDER STILL COSTS MORE THAN DOING IT RIGHT
+  --------------------------------------------------------------
+    To get what we need on Render (no idle kill + persistent disk so
+    they stop emptying the safe):
+        Render Starter (no idle kill) ....... $7 / month
+        Render Persistent Disk 1 GB ......... $1 / month
+        TOTAL Render ........................ $8 / month
+
+    Our Hetzner + Docker plan costs HALF ($4.15/mo) with 20 GB of
+    storage (not 1 GB), no idle kill, permanent disk included, and
+    full control of the machine.
+
+  PROBLEM 4 - RANDOM "MODEL FILE WON'T LOAD" BUGS
+  -------------------------------------------------
+    Render guesses which Python version to run. Sometimes the AI
+    model files trained locally won't load on Render's servers due to
+    tiny library version differences. Docker eliminates 100% of these
+    "it works on my laptop" bugs because the environment is identical.
+
+
+-------------------------------------------------------------------------
+5. RECAP (ONE PARAGRAPH FOR VERBAL REVIEW)
+-------------------------------------------------------------------------
+
+    "Ma'am, to deploy this correctly with no daily login headaches
+    and 24/7 monitoring, the cheapest and most reliable plan is
+    about $5 a month total. We rent one cheap always-on computer
+    from Hetzner, package our entire app - backend AI models plus
+    the customer dashboard website - together using Docker so it
+    runs exactly the same as on the developer's laptop, and use
+    Cloudflare for free to get a secure web address with HTTPS.
+    The Fyers stock API requires a manual login only once every 14
+    days by design. Our code automatically renews the daily key in
+    the background, and because we use a real permanent hard drive
+    instead of Render's disposable servers, the 14-day renewal key
+    never gets wiped. Render alone looks cheap but empties the
+    storage on every deploy and shuts down after 15 minutes idle -
+    that breaks both the auto-renewal and the overnight monitoring.
+    The paid Render version that fixes those is actually twice as
+    expensive as just renting a proper small server. The frontend
+    dashboard ships inside the same package as the backend, so
+    there's no extra deploy or extra cost for it."
+
+=========================================================================
+  END OF PLAN
+=========================================================================

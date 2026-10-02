@@ -1,0 +1,12 @@
+# FYERS application credentials
+FYERS_APP_ID=your_fyers_app_id-100
+FYERS_SECRET_KEY=your_fyers_secret_key
+
+# Optional tokens. Leave blank to use the browser login flow.
+FYERS_ACCESS_TOKEN=
+FYERS_REFRESH_TOKEN=
+
+# Optional automatic TOTP login configuration
+FYERS_CLIENT_ID=your_fyers_client_id
+FYERS_PIN=your_fyers_pin
+FYERS_TOTP_KEY=your_base32_totp_secret
