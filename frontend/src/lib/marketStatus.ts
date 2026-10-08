@@ -13,18 +13,22 @@ export type MarketStatus = 'open' | 'pre-market' | 'closed'
 
 /** Major NSE holidays for 2024-2026 (MM-DD format). Extend as needed. */
 const NSE_HOLIDAYS: Set<string> = new Set([
-  // 2024
-  '01-26', '03-08', '03-25', '03-29', '04-11', '04-14', '04-17', '04-21',
-  '05-01', '05-23', '06-17', '07-17', '08-15', '09-16', '10-02', '10-12',
-  '10-31', '11-01', '11-15', '12-25',
-  // 2025
-  '01-26', '02-26', '03-14', '03-31', '04-10', '04-14', '04-18',
-  '05-01', '05-12', '06-26', '07-06', '08-15', '08-16', '08-27',
-  '10-02', '10-20', '10-21', '10-22', '11-05', '11-26', '12-25',
-  // 2026
-  '01-26', '02-17', '03-10', '03-19', '03-30', '04-03', '04-14',
-  '05-01', '05-25', '07-17', '08-15', '08-28', '10-02', '10-08',
-  '10-19', '10-25', '11-24', '12-25',
+  // Official NSE Trading Holidays (MM-DD format)
+  '01-26', // Republic Day
+  '03-08', // Mahashivratri
+  '03-25', // Holi
+  '03-29', // Good Friday
+  '04-11', // Eid-Ul-Fitr
+  '04-14', // Dr. Baba Saheb Ambedkar Jayanti
+  '04-17', // Ram Navami
+  '05-01', // Maharashtra Day
+  '06-17', // Bakri Eid
+  '07-17', // Muharram
+  '08-15', // Independence Day
+  '10-02', // Mahatma Gandhi Jayanti
+  '11-01', // Diwali Laxmi Pujan
+  '11-15', // Guru Nanak Jayanti
+  '12-25', // Christmas
 ])
 
 /** Get current IST Date parts */
